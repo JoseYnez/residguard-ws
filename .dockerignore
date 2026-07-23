@@ -1,0 +1,10 @@
+node_modules
+dist
+# Secretos y entorno local: la config del contenedor viaja por variables de
+# entorno del orquestador, nunca dentro de la imagen.
+.env
+.env.*
+.git
+*.log
+coverage
+.vscode

@@ -6,6 +6,7 @@ import {
 } from "structure-verifier/fastify";
 import { config } from "./config";
 import { registerAuthentication } from "./core/auth/authenticate";
+import { closePool } from "./core/db/pool";
 import { registerErrorHandler } from "./core/http/error_handler";
 import { communitiesV1Routes } from "./api/communities/v1/communities_v1.routes";
 import { communityMembersV1Routes } from "./api/community-members/v1/community_members_v1.routes";
@@ -103,6 +104,29 @@ async function main(): Promise<void> {
     await app.register(fundAdjustmentsV1Routes);
 
     await app.listen({ port: config.port, host: config.host });
+
+    // Apagado ordenado (deploy/restart del contenedor: tini reenvía SIGTERM):
+    // deja de aceptar conexiones, espera los requests en vuelo (app.close) y
+    // cierra el pool de PostgreSQL. Idempotente ante señales repetidas; si el
+    // cierre se atora, un segundo Ctrl+C / SIGTERM fuerza la salida.
+    let shuttingDown = false;
+    const shutdown = (signal: string): void => {
+        if (shuttingDown) {
+            process.exit(1);
+        }
+        shuttingDown = true;
+        app.log.info(`${signal} recibido: cerrando residguard_ws…`);
+        void app
+            .close()
+            .then(() => closePool())
+            .then(() => process.exit(0))
+            .catch((err) => {
+                app.log.error(err, "fallo durante el apagado ordenado");
+                process.exit(1);
+            });
+    };
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((err) => {
