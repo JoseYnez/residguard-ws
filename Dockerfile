@@ -3,17 +3,14 @@
 # =============================================================================
 # residguard_ws — imagen de liberación (patrón de notificacion_project/smtp-service)
 # =============================================================================
-# PARTICULARIDAD DE ESTE SERVICIO: depende de la lib local
-#   structure-verifier: file:../../libs/structure-verifier
-# que vive FUERA de este directorio. Se resuelve con un build context ADICIONAL
-# de BuildKit y replicando dentro de la imagen el layout local
-# (…/residguard_v2/residguard_ws + …/libs/structure-verifier), para que la ruta
-# relativa del package.json resuelva igual que en desarrollo.
+# Build AUTOCONTENIDO: structure-verifier se consume desde npm (^1.1.3, paquete
+# propio publicado), no como file:../../libs — así el build funciona igual aquí,
+# en Nixpacks o en cualquier CI sin contextos adicionales. Para trabajar la lib
+# en local se puede usar `pnpm link ../../libs/structure-verifier` SIN commitear
+# el cambio de package.json.
 #
 # CÓMO CONSTRUIR (desde este directorio):
-#   docker build --build-context libs=../../libs -t residguard-ws .
-# Requiere BuildKit (default en Docker moderno) y que la lib tenga su dist/
-# generado (npx tsc en D:\Projects\libs\structure-verifier si faltara).
+#   docker build -t residguard-ws .
 #
 # CÓMO CORRER (la config viaja por variables de entorno, nunca en la imagen):
 #   docker run -p 3004:3004 -e NODE_ENV=production \
@@ -38,13 +35,7 @@ ENV PNPM_STORE_DIR=/pnpm/store
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
 
-# Lib local: solo su package.json + dist (el runtime no necesita fuentes). La
-# ruta replica el layout local para que `file:../../libs/structure-verifier`
-# resuelva desde el WORKDIR del servicio.
-COPY --from=libs structure-verifier/package.json /app/libs/structure-verifier/package.json
-COPY --from=libs structure-verifier/dist /app/libs/structure-verifier/dist
-
-WORKDIR /app/residguard_v2/residguard_ws
+WORKDIR /app
 
 # Dependencias con lockfile congelado (build reproducible). pnpm-workspace.yaml
 # trae allowBuilds (esbuild) para que el install no falle por scripts ignorados.
@@ -70,13 +61,11 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Mismos paths que la etapa de build: si pnpm dejó symlinks hacia la lib
-# (dependencia file:), siguen resolviendo. Solo artefactos de runtime — sin
-# fuentes, sin devDependencies, sin .env.
-COPY --from=build /app/libs /app/libs
-WORKDIR /app/residguard_v2/residguard_ws
-COPY --from=build /app/residguard_v2/residguard_ws/node_modules ./node_modules
-COPY --from=build /app/residguard_v2/residguard_ws/dist ./dist
+# Solo artefactos de runtime: node_modules ya podado + dist. Sin fuentes, sin
+# devDependencies, sin .env.
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
 COPY package.json ./
 
 # El servicio escucha en 0.0.0.0:3004 por defecto (config: PORT).
