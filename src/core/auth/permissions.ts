@@ -31,10 +31,12 @@ export const PERMISSIONS = {
     communityMembersCreate: "community_members.create",
     communityMembersUpdate: "community_members.update",
 
-    // Unidades.
+    // Unidades. Excepción a la convención "sin .delete": la baja (lógica) de
+    // unidades se autoriza con permiso propio, separado de la edición.
     unitsRead: "units.read",
     unitsCreate: "units.create",
     unitsUpdate: "units.update",
+    unitsDelete: "units.delete",
 
     // Personas asociadas a una unidad.
     unitMembersRead: "unit_members.read",

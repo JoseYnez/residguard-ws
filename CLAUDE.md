@@ -87,9 +87,11 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (23 en total). **No hay `.delete`**:
-     la baja es lógica y se autoriza con `.update`, igual que en `admin_ws`.
-     `payments.revoke` es `execute` (operación sancionada, no una edición).
+   - Códigos: convención `recurso.accion` (24 en total). La baja es lógica y
+     en general se autoriza con `.update` (igual que en `admin_ws`);
+     **`units.delete` es la excepción**: la baja de unidades tiene permiso
+     propio. `payments.revoke` es `execute` (operación sancionada, no una
+     edición).
    - `src/core/auth/permissions.ts` es el espejo tipado del seed:
      `requirePermission` solo acepta `PermissionCode`, así que un código
      inexistente es error de compilación (en `admin_ws` son strings sueltos).

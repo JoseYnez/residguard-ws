@@ -27,57 +27,61 @@ const FETCH_TIMEOUT_MS = 3_000;
 const CACHE_MAX_ENTRIES = 5_000;
 
 export type PermissionsLookup =
-    /** Respuesta fresca de auth_ws (o caché dentro del TTL). */
-    | { readonly kind: "ok"; readonly permissions: ReadonlySet<string> }
-    /**
-     * auth_ws inalcanzable, pero teníamos una respuesta suya vigente dentro de
-     * la ventana de gracia. Se autoriza con ella y se registra la degradación.
-     */
-    | { readonly kind: "stale"; readonly permissions: ReadonlySet<string>; readonly ageMs: number }
-    /** auth_ws rechazó el token/sesión (revocada): más autoridad que la firma local. */
-    | { readonly kind: "unauthorized" }
-    /** auth_ws inalcanzable y sin caché utilizable: el llamador falla cerrado. */
-    | { readonly kind: "unavailable" };
+  /** Respuesta fresca de auth_ws (o caché dentro del TTL). */
+  | { readonly kind: "ok"; readonly permissions: ReadonlySet<string> }
+  /**
+   * auth_ws inalcanzable, pero teníamos una respuesta suya vigente dentro de
+   * la ventana de gracia. Se autoriza con ella y se registra la degradación.
+   */
+  | {
+      readonly kind: "stale";
+      readonly permissions: ReadonlySet<string>;
+      readonly ageMs: number;
+    }
+  /** auth_ws rechazó el token/sesión (revocada): más autoridad que la firma local. */
+  | { readonly kind: "unauthorized" }
+  /** auth_ws inalcanzable y sin caché utilizable: el llamador falla cerrado. */
+  | { readonly kind: "unavailable" };
 
 interface CacheEntry {
-    readonly permissions: ReadonlySet<string>;
-    /** Hasta cuándo se sirve sin volver a preguntar. */
-    readonly freshUntilMs: number;
-    /** Hasta cuándo se sirve como `stale` si auth_ws no responde. */
-    readonly staleUntilMs: number;
+  readonly permissions: ReadonlySet<string>;
+  /** Hasta cuándo se sirve sin volver a preguntar. */
+  readonly freshUntilMs: number;
+  /** Hasta cuándo se sirve como `stale` si auth_ws no responde. */
+  readonly staleUntilMs: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 
 function pruneIfNeeded(nowMs: number): void {
-    if (cache.size <= CACHE_MAX_ENTRIES) {
-        return;
+  if (cache.size <= CACHE_MAX_ENTRIES) {
+    return;
+  }
+  // Se purga por `staleUntilMs`, no por `freshUntilMs`: una entrada vencida
+  // pero dentro de la gracia sigue siendo útil ante una caída de auth_ws.
+  for (const [sid, entry] of cache) {
+    if (entry.staleUntilMs <= nowMs) {
+      cache.delete(sid);
     }
-    // Se purga por `staleUntilMs`, no por `freshUntilMs`: una entrada vencida
-    // pero dentro de la gracia sigue siendo útil ante una caída de auth_ws.
-    for (const [sid, entry] of cache) {
-        if (entry.staleUntilMs <= nowMs) {
-            cache.delete(sid);
-        }
-    }
-    // Si tras purgar sigue desbordada (avalancha de sesiones), se vacía: la
-    // caché es una optimización, nunca un requisito de correctitud.
-    if (cache.size > CACHE_MAX_ENTRIES) {
-        cache.clear();
-    }
+  }
+  // Si tras purgar sigue desbordada (avalancha de sesiones), se vacía: la
+  // caché es una optimización, nunca un requisito de correctitud.
+  if (cache.size > CACHE_MAX_ENTRIES) {
+    cache.clear();
+  }
 }
 
 /** Caché utilizable como degradación, o null si ya venció la gracia. */
 function staleFallback(sid: string, nowMs: number): PermissionsLookup {
-    const entry = cache.get(sid);
-    if (entry === undefined || entry.staleUntilMs <= nowMs) {
-        return { kind: "unavailable" };
-    }
-    return {
-        kind: "stale",
-        permissions: entry.permissions,
-        ageMs: nowMs - (entry.freshUntilMs - CACHE_TTL_MS),
-    };
+  const entry = cache.get(sid);
+  if (entry === undefined || entry.staleUntilMs <= nowMs) {
+    return { kind: "unavailable" };
+  }
+  return {
+    kind: "stale",
+    permissions: entry.permissions,
+    ageMs: nowMs - (entry.freshUntilMs - CACHE_TTL_MS),
+  };
 }
 
 /**
@@ -86,58 +90,68 @@ function staleFallback(sid: string, nowMs: number): PermissionsLookup {
  * degradación durante la ventana de gracia configurada.
  */
 export async function getSessionPermissions(
-    sid: string,
-    bearerToken: string,
+  sid: string,
+  bearerToken: string,
 ): Promise<PermissionsLookup> {
-    const now = Date.now();
-    const hit = cache.get(sid);
-    if (hit !== undefined && hit.freshUntilMs > now) {
-        return { kind: "ok", permissions: hit.permissions };
-    }
+  const now = Date.now();
+  const hit = cache.get(sid);
+  if (hit !== undefined && hit.freshUntilMs > now) {
+    console.log("auth_ws permissions cache hit", sid);
+    return { kind: "ok", permissions: hit.permissions };
+  }
 
-    let response: Response;
-    try {
-        response = await fetch(`${config.authWsBaseUrl}/auth/sessions/current/permissions`, {
-            headers: { authorization: `Bearer ${bearerToken}` },
-            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        });
-    } catch {
-        return staleFallback(sid, now);
-    }
-
-    // 401 es una respuesta CON autoridad: la sesión ya no vale. Se descarta la
-    // caché — servirla como `stale` mantendría viva una sesión revocada.
-    if (response.status === 401) {
-        cache.delete(sid);
-        return { kind: "unauthorized" };
-    }
-    if (!response.ok) {
-        return staleFallback(sid, now);
-    }
-
-    let body: { permissions?: unknown };
-    try {
-        body = (await response.json()) as { permissions?: unknown };
-    } catch {
-        return staleFallback(sid, now);
-    }
-    if (!Array.isArray(body.permissions)) {
-        return staleFallback(sid, now);
-    }
-
-    const permissions: ReadonlySet<string> = new Set(
-        body.permissions.filter((p): p is string => typeof p === "string"),
+  let response: Response;
+  try {
+    response = await fetch(
+      `${config.authWsBaseUrl}/auth/sessions/current/permissions`,
+      {
+        headers: { authorization: `Bearer ${bearerToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      },
     );
-    pruneIfNeeded(now);
-    cache.set(sid, {
-        permissions,
-        freshUntilMs: now + CACHE_TTL_MS,
-        staleUntilMs: now + CACHE_TTL_MS + config.permissionsStaleGraceMs,
-    });
-    return { kind: "ok", permissions };
+    console.log(
+      "auth_ws permissions response",
+      response.status,
+      response.statusText,
+    );
+  } catch {
+    console.error("auth_ws permissions fetch failed", sid);
+    return staleFallback(sid, now);
+  }
+
+  // 401 es una respuesta CON autoridad: la sesión ya no vale. Se descarta la
+  // caché — servirla como `stale` mantendría viva una sesión revocada.
+  if (response.status === 401) {
+    cache.delete(sid);
+    return { kind: "unauthorized" };
+  }
+  if (!response.ok) {
+    return staleFallback(sid, now);
+  }
+
+  let body: { permissions?: unknown };
+  try {
+    body = (await response.json()) as { permissions?: unknown };
+  } catch {
+    return staleFallback(sid, now);
+  }
+  if (!Array.isArray(body.permissions)) {
+    return staleFallback(sid, now);
+  }
+
+  const permissions: ReadonlySet<string> = new Set(
+    body.permissions.filter((p): p is string => typeof p === "string"),
+  );
+  pruneIfNeeded(now);
+  cache.set(sid, {
+    permissions,
+    freshUntilMs: now + CACHE_TTL_MS,
+    staleUntilMs: now + CACHE_TTL_MS + config.permissionsStaleGraceMs,
+  });
+  return { kind: "ok", permissions };
 }
 
 /** Invalida la caché de una sesión (p. ej. tras revocarla desde soporte). */
 export function invalidateSessionPermissions(sid: string): void {
-    cache.delete(sid);
+  cache.delete(sid);
 }

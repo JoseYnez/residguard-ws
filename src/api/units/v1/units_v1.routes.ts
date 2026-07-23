@@ -164,10 +164,10 @@ export async function unitsV1Routes(instance: FastifyInstance): Promise<void> {
   app.delete(
     "/communities/:communityId/units/:id",
     {
-      // La baja es lógica: se autoriza con `.update`, no con un `.delete`
-      // propio (misma convención que admin_ws — el catálogo no tiene `.delete`).
+      // La baja sigue siendo lógica (soft delete), pero se autoriza con su
+      // propio `units.delete` — excepción a la convención general de `.update`.
       schema: { params: communityScopedIdParamV1V },
-      preHandler: [requirePermission(PERMISSIONS.unitsUpdate), requireCommunityAccess()],
+      preHandler: [requirePermission(PERMISSIONS.unitsDelete), requireCommunityAccess()],
     },
     async (req, reply) => {
       const deleted = await unitsController.softDelete(
