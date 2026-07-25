@@ -60,7 +60,7 @@ export const paymentsController = {
         if (accessible !== distinct.size) {
           return null;
         }
-        return paymentsRepository.register(tx, claims.sub, input);
+        return paymentsRepository.register(tx, input);
       });
       if (payment === null) {
         return {

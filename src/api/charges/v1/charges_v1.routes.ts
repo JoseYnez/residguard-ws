@@ -1,23 +1,59 @@
 import type { FastifyInstance } from "fastify";
 import type { StructureVerifierTypeProvider } from "structure-verifier/fastify";
-import { requireUnitAccess } from "../../../core/auth/community_access";
+import {
+  requireCommunityAccess,
+  requireUnitAccess,
+} from "../../../core/auth/community_access";
 import { PERMISSIONS } from "../../../core/auth/permissions";
 import { requirePermission } from "../../../core/auth/require_permission";
-import { unitIdParamV1V } from "../../common/common_v1.verifier";
+import { communityIdParamV1V, unitIdParamV1V } from "../../common/common_v1.verifier";
 import { chargesController } from "./charges_v1.controller";
 import {
   chargeListV1V,
+  createChargesV1V,
+  createdChargesV1V,
   errorResponseV1V,
+  generateChargesV1V,
+  generatedChargesV1V,
   listChargesQueryV1V,
 } from "./charges_v1.verifier";
 
-// Recurso charges/v1: SOLO LECTURA. Estado de cuenta de una unidad — qué
-// cargos tiene, con saldo pendiente y vencimiento — para alimentar el flujo
-// de pagos (POST /payments aplica contra estos cargos).
+// Recurso charges/v1: estado de cuenta por COMUNIDAD (todas sus unidades, con
+// filtro opcional por unidad) o por unidad (alimenta el flujo de pagos), y
+// REGISTRO de una cuota sobre una o varias unidades de la comunidad (un cargo
+// por unidad, transacción todo-o-nada).
 
 export async function chargesV1Routes(instance: FastifyInstance): Promise<void> {
   const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
 
+  // Listar por comunidad (todas las unidades; `unitId` opcional para acotar).
+  app.get(
+    "/communities/:communityId/charges",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        querystring: listChargesQueryV1V,
+        response: { 200: chargeListV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.chargesRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const { items, total } = await chargesController.list(req, {
+        communityId: req.params.communityId,
+        unitId: q.unitId ?? null,
+        page: q.page,
+        pageSize: q.pageSize,
+        paymentStatus: q.paymentStatus ?? null,
+        overdueOnly: q.overdueOnly ?? null,
+        from: q.from ?? null,
+        to: q.to ?? null,
+      });
+      return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
+  // Listar por unidad (estado de cuenta que consume el flujo de pagos).
   app.get(
     "/units/:unitId/charges",
     {
@@ -31,6 +67,7 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
     async (req, reply) => {
       const q = req.query;
       const { items, total } = await chargesController.list(req, {
+        // La unidad manda: viene de la ruta (el filtro de query se ignora aquí).
         unitId: req.params.unitId,
         page: q.page,
         pageSize: q.pageSize,
@@ -40,6 +77,76 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
         to: q.to ?? null,
       });
       return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
+  // Registrar cargos: la misma cuota/periodo sobre 1..N unidades de la
+  // comunidad. Todo-o-nada: si una unidad falla, no se crea ninguno.
+  app.post(
+    "/communities/:communityId/charges",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        body: createChargesV1V,
+        response: {
+          201: createdChargesV1V,
+          400: errorResponseV1V,
+          404: errorResponseV1V,
+          409: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.chargesCreate), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const b = req.body;
+      const result = await chargesController.create(req, req.params.communityId, {
+        feeId: b.feeId,
+        unitIds: b.unitIds,
+        periodStart: b.periodStart,
+        periodEnd: b.periodEnd,
+        appliedAmount: b.appliedAmount,
+        dueDate: b.dueDate,
+      });
+      if (!result.ok) {
+        const status = result.error.kind === "conflict" ? 409 : 400;
+        return reply.code(status).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(201).send({ items: result.value, total: result.value.length });
+    },
+  );
+
+  // Generar la cuota sobre TODAS sus unidades activas en un rango (default: su
+  // vigencia). El largo/paso de cada cargo lo define la periodicidad; one_time
+  // genera uno solo. Idempotente: reejecutar no crea duplicados.
+  app.post(
+    "/communities/:communityId/charges/generate",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        body: generateChargesV1V,
+        response: {
+          201: generatedChargesV1V,
+          400: errorResponseV1V,
+          404: errorResponseV1V,
+          409: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.chargesCreate), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const b = req.body;
+      const result = await chargesController.generate(req, req.params.communityId, {
+        feeId: b.feeId,
+        from: b.from ?? null,
+        to: b.to ?? null,
+        dueDay: b.dueDay ?? null,
+        amount: b.amount ?? null,
+      });
+      if (!result.ok) {
+        const status = result.error.kind === "conflict" ? 409 : 400;
+        return reply.code(status).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(201).send({ created: result.value });
     },
   );
 }

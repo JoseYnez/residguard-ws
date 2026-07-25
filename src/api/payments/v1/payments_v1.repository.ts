@@ -31,8 +31,16 @@ export interface PaymentDetail extends Payment {
   readonly allocations: PaymentAllocation[];
 }
 
+/** Unidad alcanzada por un pago (contexto de display del listado). */
+export interface PaymentUnitRef {
+  readonly id: string;
+  readonly code: string;
+}
+
 export interface PaymentListItem extends Payment {
   readonly allocatedToCommunity: number;
+  /** Unidades (de la comunidad filtrada) cuyas aplicaciones cubre el pago. */
+  readonly units: PaymentUnitRef[];
 }
 
 export interface RegisterPaymentInput {
@@ -144,17 +152,14 @@ export const paymentsRepository = {
 
   /**
    * Registra el depósito vía billing.sp_register_payment y devuelve la fila
-   * creada. El id se recupera de la propia transacción: la fila insertada en
-   * ella es la única visible con created_at = transaction_timestamp() y
-   * created_by = actor (el id uuid_v7 ordena por tiempo → la última).
+   * creada. La sp devuelve el id por su INOUT `p_payment_id`.
    */
-  async register(
-    tx: TxClient,
-    userId: string,
-    input: RegisterPaymentInput,
-  ): Promise<PaymentDetail> {
-    await tx.query(
-      `CALL billing.sp_register_payment($1, $2::billing.payment_method, $3::jsonb, COALESCE($4::timestamptz, now()), $5)`,
+  async register(tx: TxClient, input: RegisterPaymentInput): Promise<PaymentDetail> {
+    // El id del pago sale del INOUT p_payment_id (fila que devuelve el CALL).
+    // No se busca por timestamps: el trigger de auditoría estampa created_at
+    // con clock_timestamp(), que NUNCA iguala transaction_timestamp().
+    const call = await tx.query<{ p_payment_id: string | null }>(
+      `CALL billing.sp_register_payment($1, $2::billing.payment_method, $3::jsonb, COALESCE($4::timestamptz, now()), $5, NULL)`,
       [
         input.amount,
         input.method,
@@ -165,15 +170,14 @@ export const paymentsRepository = {
         input.reference ?? null,
       ],
     );
+    const paymentId = call.rows[0]?.p_payment_id ?? null;
+    if (paymentId === null) {
+      throw new Error("sp_register_payment no devolvió el id del pago creado");
+    }
 
     const created = await tx.query<PaymentRow>(
-      `SELECT ${SELECT_COLUMNS}
-         FROM billing.payments
-        WHERE created_at = transaction_timestamp()
-          AND created_by = $1
-        ORDER BY id DESC
-        LIMIT 1`,
-      [userId],
+      `SELECT ${SELECT_COLUMNS} FROM billing.payments WHERE id = $1`,
+      [paymentId],
     );
     const row = created.rows[0];
     if (row === undefined) {
@@ -201,6 +205,8 @@ export const paymentsRepository = {
         ON pa.customer_id = p.customer_id AND pa.payment_id = p.id AND pa.status != 'deleted'
       JOIN billing.charges c
         ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+      JOIN community.units u
+        ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
      WHERE c.community_id = $1
        AND p.status != 'deleted'
        AND ($2::billing.payment_method IS NULL OR p.method = $2::billing.payment_method)
@@ -214,10 +220,13 @@ export const paymentsRepository = {
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
-    const itemsResult = await tx.query<PaymentRow & { allocated: string }>(
+    const itemsResult = await tx.query<
+      PaymentRow & { allocated: string; units: PaymentUnitRef[] }
+    >(
       `SELECT p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
               p.status, p.created_at, p.updated_at,
-              SUM(pa.amount)::text AS allocated
+              SUM(pa.amount)::text AS allocated,
+              jsonb_agg(DISTINCT jsonb_build_object('id', u.id, 'code', u.code)) AS units
          ${fromWhere}
         GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference, p.status,
                  p.created_at, p.updated_at
@@ -230,6 +239,7 @@ export const paymentsRepository = {
       items: itemsResult.rows.map((row) => ({
         ...mapRow(row),
         allocatedToCommunity: Number(row.allocated),
+        units: row.units,
       })),
       total,
     };

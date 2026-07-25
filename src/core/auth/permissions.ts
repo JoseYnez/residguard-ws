@@ -43,8 +43,16 @@ export const PERMISSIONS = {
     unitMembersCreate: "unit_members.create",
     unitMembersUpdate: "unit_members.update",
 
-    // Cargos: solo lectura (su generación no tiene endpoint todavía).
+    // Cuotas: catálogo por comunidad (la lectura alimenta el selector del
+    // registro de cargos). Baja lógica autorizada con `.update`.
+    feesRead: "fees.read",
+    feesCreate: "fees.create",
+    feesUpdate: "fees.update",
+
+    // Cargos: lectura del estado de cuenta y registro (asignar una cuota a una
+    // unidad). La edición/condonación siguen sin endpoint.
     chargesRead: "charges.read",
+    chargesCreate: "charges.create",
 
     // Pagos. Anular NO es `.update`: es una operación sancionada distinta
     // (soft-delete + recálculo de estatus de cargos), por eso `execute`.

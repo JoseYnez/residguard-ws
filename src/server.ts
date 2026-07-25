@@ -12,6 +12,7 @@ import { communitiesV1Routes } from "./api/communities/v1/communities_v1.routes"
 import { communityMembersV1Routes } from "./api/community-members/v1/community_members_v1.routes";
 import { unitsV1Routes } from "./api/units/v1/units_v1.routes";
 import { unitMembersV1Routes } from "./api/unit-members/v1/unit_members_v1.routes";
+import { feesV1Routes } from "./api/fees/v1/fees_v1.routes";
 import { chargesV1Routes } from "./api/charges/v1/charges_v1.routes";
 import { paymentsV1Routes } from "./api/payments/v1/payments_v1.routes";
 import { expenseCategoriesV1Routes } from "./api/expense-categories/v1/expense_categories_v1.routes";
@@ -97,6 +98,7 @@ async function main(): Promise<void> {
     await app.register(communityMembersV1Routes);
     await app.register(unitsV1Routes);
     await app.register(unitMembersV1Routes);
+    await app.register(feesV1Routes);
     await app.register(chargesV1Routes);
     await app.register(paymentsV1Routes);
     await app.register(expenseCategoriesV1Routes);

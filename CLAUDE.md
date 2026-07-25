@@ -35,7 +35,8 @@ residguard_ws/
 │   │   ├── community-members/v1/    ← relación usuario↔comunidad (visibilidad)
 │   │   ├── units/v1/                ← unidades (CRUD)
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
-│   │   ├── charges/v1/              ← cargos por unidad (solo lectura, con saldo)
+│   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
+│   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
@@ -87,7 +88,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (24 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (28 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke` es `execute` (operación sancionada, no una
@@ -192,8 +193,14 @@ Validada al boot con structure-verifier; si falta algo, el proceso no arranca.
 
 ## 7. Pendientes conocidos (fuera de esta versión)
 
-- Gestión de cuotas (`billing.fees`) y generación/asignación de cargos
-  (`billing.charges` es solo lectura aquí).
+- Cargos: lectura por comunidad (`GET /communities/:communityId/charges`, con
+  filtro `unitId` opcional) o por unidad (`GET /units/:unitId/charges`, la
+  fuente del flujo de pagos), y registro multi-unidad
+  (`POST /communities/:communityId/charges` con `unitIds[]`, permiso
+  `charges.create`: un cargo por unidad en una transacción todo-o-nada; la
+  cuota debe ser activa y de la comunidad, y el solapamiento responde 409 vía
+  `ex_charges_no_overlap` nombrando la unidad). Edición/baja de cargos siguen
+  pendientes.
 - Condonaciones (`billing.sp_waive_charge`) sin endpoint.
 - Roles **por comunidad**. Ya hay distinción admin/lector
   (`community_admin` / `community_reader`), pero el permiso se resuelve sobre

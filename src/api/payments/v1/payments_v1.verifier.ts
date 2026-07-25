@@ -98,6 +98,13 @@ export const paymentListItemV1V = new V.ObjectNotNull({
   updatedAt: new V.StringNotNull(),
   /** Parte del depósito aplicada a cargos de la comunidad del filtro. */
   allocatedToCommunity: new V.NumberNotNull(),
+  /** Unidades (de esa comunidad) cuyas aplicaciones cubre el pago. */
+  units: new V.ArrayNotNull(
+    new V.ObjectNotNull({
+      id: new V.StringNotNull(),
+      code: new V.StringNotNull(),
+    }),
+  ),
 });
 
 export const paymentListV1V = new V.ObjectNotNull({
