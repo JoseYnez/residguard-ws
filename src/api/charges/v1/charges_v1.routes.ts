@@ -46,6 +46,7 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
         pageSize: q.pageSize,
         paymentStatus: q.paymentStatus ?? null,
         overdueOnly: q.overdueOnly ?? null,
+        openOnly: q.openOnly ?? null,
         from: q.from ?? null,
         to: q.to ?? null,
       });
@@ -73,6 +74,7 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
         pageSize: q.pageSize,
         paymentStatus: q.paymentStatus ?? null,
         overdueOnly: q.overdueOnly ?? null,
+        openOnly: q.openOnly ?? null,
         from: q.from ?? null,
         to: q.to ?? null,
       });

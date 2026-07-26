@@ -150,6 +150,25 @@ export const expensesRepository = {
     return row === undefined ? null : mapRow(row);
   },
 
+  /**
+   * ¿Es el rubro ACTIVO y de esta comunidad? La FK compuesta
+   * (customer_id, community_id, expense_category_id) ya impide usar un rubro de
+   * otra comunidad, pero no mira `status`: sin esta comprobación se podrían
+   * registrar gastos contra un rubro retirado del catálogo.
+   */
+  async activeCategoryExists(
+    tx: TxClient,
+    communityId: string,
+    categoryId: string,
+  ): Promise<boolean> {
+    const result = await tx.query(
+      `SELECT 1 FROM billing.expense_categories
+        WHERE id = $1 AND community_id = $2 AND status = 'active'`,
+      [categoryId, communityId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
   /** Inserta un gasto. Puede lanzar 23503 (rubro de otra comunidad) / 23514. */
   async create(
     tx: TxClient,

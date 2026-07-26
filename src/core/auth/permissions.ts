@@ -11,16 +11,19 @@
 // un error de compilación.
 //
 // INVARIANTE: este objeto y el seed SQL
-// `admin_project/db/09_seed_residguard_app.sql` deben mantenerse sincronizados.
+// `admin_project/db/99_seed_residguard_app.sql` deben mantenerse sincronizados.
 // Al añadir un permiso hay que tocar LOS DOS. Un permiso que exista aquí pero
 // no en BD deniega a todo el mundo (incluido el superadmin: el comodín
 // `grants_all_permissions` solo expande sobre permisos que existan para la app).
+// El seed es de ejecución única: sobre una BD ya sembrada, los códigos nuevos
+// entran por `admin_project/db/99_patch_residguard_permissions.sql`.
 //
 // Convención heredada de la plataforma (CLAUDE.md §3 de admin_project):
 // `recurso.accion`, con `resource` como prefijo literal del `code`, y
-// `action_type` ∈ read/create/update/delete/execute. NO se catalogan permisos
-// `.delete`: la baja es lógica y se autoriza con `.update`, igual que en
-// admin_ws.
+// `action_type` ∈ read/create/update/delete/execute. Por regla general NO se
+// catalogan permisos `.delete` — la baja es lógica y se autoriza con `.update`,
+// igual que en admin_ws — con dos excepciones explícitas: `units.delete` y
+// `payments.revoke` (ver sus comentarios más abajo).
 
 export const PERMISSIONS = {
     // Comunidades: solo lectura en este servicio (el alta la hace la consola).
@@ -78,7 +81,3 @@ export const PERMISSIONS = {
 
 /** Unión de todos los códigos del catálogo. El guard solo acepta estos. */
 export type PermissionCode = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
-
-/** Lista plana del catálogo (útil para diagnóstico y para pruebas de paridad). */
-export const ALL_PERMISSION_CODES: readonly PermissionCode[] =
-    Object.values(PERMISSIONS);

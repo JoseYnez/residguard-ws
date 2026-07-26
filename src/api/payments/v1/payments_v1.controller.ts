@@ -60,7 +60,7 @@ export const paymentsController = {
         if (accessible !== distinct.size) {
           return null;
         }
-        return paymentsRepository.register(tx, input);
+        return paymentsRepository.register(tx, claims.sub, input);
       });
       if (payment === null) {
         return {
@@ -100,9 +100,9 @@ export const paymentsController = {
   },
 
   /**
-   * Anula el pago. "not_found" si no existe o el actor no ve ninguna de sus
-   * comunidades; "forbidden" si lo ve pero no alcanza TODAS (anular afecta
-   * cargos de comunidades ajenas).
+   * Anula el pago. "not_found" si no existe, si no le queda ninguna aplicación
+   * activa o si el actor no ve ninguna de sus comunidades; "forbidden" si lo ve
+   * pero no alcanza TODAS (anular afecta cargos de comunidades ajenas).
    */
   async softDelete(
     req: FastifyRequest,
@@ -115,10 +115,19 @@ export const paymentsController = {
         return "not_found";
       }
       const touched = await paymentsRepository.getTouchedCommunities(tx, id);
-      const reachesAny =
-        touched.length === 0 ||
-        (await paymentsRepository.userReachesAllCommunities(tx, claims.sub, touched));
-      if (!reachesAny) {
+      // Un pago sin aplicaciones activas no lo alcanza NINGUNA comunidad: no
+      // hay nada contra lo que medir el alcance del actor, así que se responde
+      // opaco. Tratarlo como "alcanzable" abriría la anulación a cualquiera
+      // con `payments.revoke` del tenant.
+      if (touched.length === 0) {
+        return "not_found";
+      }
+      const reachesAll = await paymentsRepository.userReachesAllCommunities(
+        tx,
+        claims.sub,
+        touched,
+      );
+      if (!reachesAll) {
         // ¿Ve al menos una? → 403; ninguna → opaco 404.
         const visible = await paymentsRepository.getById(tx, claims.sub, id);
         return visible === null ? "not_found" : "forbidden";

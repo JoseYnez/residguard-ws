@@ -62,6 +62,8 @@ export const listChargesQueryV1V = new V.ObjectNotNull(
     paymentStatus: new V.String({ in: [...PAYMENT_STATUSES] }),
     /** Solo cargos vencidos y no cubiertos (due_date < hoy). */
     overdueOnly: new V.Boolean(),
+    /** Solo cargos ABIERTOS: activos y con saldo pendiente (los cobrables). */
+    openOnly: new V.Boolean(),
     from: new V.String({ regex: ISO_DATE_REGEX }),
     to: new V.String({ regex: ISO_DATE_REGEX }),
   },

@@ -50,7 +50,13 @@ export async function userHasCommunityAccess(
 /**
  * ¿Alcanza el usuario la unidad? Resuelve unidad → comunidad → membresía en
  * una sola consulta. Devuelve el community_id de la unidad o null si la
- * unidad no existe / está eliminada / queda fuera del alcance.
+ * unidad no existe / está eliminada / su comunidad no está activa / queda
+ * fuera del alcance.
+ *
+ * La unidad se admite `inactive` (dada de baja pero gestionable: el detalle
+ * sigue siendo consultable y reactivable); la COMUNIDAD no — desactivarla
+ * cierra el acceso a todo lo que cuelga de ella, igual que en
+ * `userHasCommunityAccess`.
  */
 export async function resolveUnitAccess(
     tx: TxClient,
@@ -60,10 +66,13 @@ export async function resolveUnitAccess(
     const result = await tx.query<{ community_id: string }>(
         `SELECT u.community_id
            FROM community.units u
+           JOIN community.communities c
+             ON c.customer_id = u.customer_id AND c.id = u.community_id
            JOIN community.community_members cm
              ON cm.customer_id = u.customer_id AND cm.community_id = u.community_id
           WHERE u.id        = $1
             AND u.status   <> 'deleted'
+            AND c.status    = 'active'
             AND cm.user_id  = $2
             AND cm.status   = 'active'`,
         [unitId, userId],

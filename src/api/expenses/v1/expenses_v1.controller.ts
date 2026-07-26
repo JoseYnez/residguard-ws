@@ -13,12 +13,16 @@ import {
 
 // Orquestación del recurso expenses. El acceso a la comunidad de la ruta ya
 // lo garantizó requireCommunityAccess; la FK compuesta de BD valida que el
-// rubro pertenezca a esa misma comunidad.
+// rubro pertenezca a esa misma comunidad. Lo que la FK NO valida es el `status`
+// del rubro, así que eso se comprueba aquí antes de escribir.
 
 const PG_MESSAGES = {
   reference: "El rubro de gasto no existe o no pertenece a esta comunidad.",
   check: "El monto del gasto debe ser mayor a cero.",
 } as const;
+
+/** Mismo texto que la violación de FK: un rubro inválido no se distingue. */
+const INACTIVE_CATEGORY = PG_MESSAGES.reference;
 
 export const expensesController = {
   async list(
@@ -41,9 +45,20 @@ export const expensesController = {
   ): Promise<MutationResult<Expense>> {
     const claims = requireAuth(req);
     try {
-      const expense = await withTransaction(contextFor(req), (tx) =>
-        expensesRepository.create(tx, claims.customerId, communityId, input),
-      );
+      const expense = await withTransaction(contextFor(req), async (tx) => {
+        const usable = await expensesRepository.activeCategoryExists(
+          tx,
+          communityId,
+          input.expenseCategoryId,
+        );
+        if (!usable) {
+          return null;
+        }
+        return expensesRepository.create(tx, claims.customerId, communityId, input);
+      });
+      if (expense === null) {
+        return { ok: false, error: { kind: "invalid", message: INACTIVE_CATEGORY } };
+      }
       return { ok: true, value: expense };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
@@ -58,13 +73,28 @@ export const expensesController = {
     input: UpdateExpenseInput,
   ): Promise<MutationResult<Expense> | null> {
     try {
-      const expense = await withTransaction(contextFor(req), (tx) =>
-        expensesRepository.update(tx, communityId, id, input),
-      );
-      if (expense === null) {
+      const outcome = await withTransaction(contextFor(req), async (tx) => {
+        // Solo se valida si el PATCH cambia el rubro: editar otros campos de un
+        // gasto viejo cuyo rubro se retiró después sigue siendo legítimo.
+        if (input.expenseCategoryId !== undefined) {
+          const usable = await expensesRepository.activeCategoryExists(
+            tx,
+            communityId,
+            input.expenseCategoryId,
+          );
+          if (!usable) {
+            return "bad_category" as const;
+          }
+        }
+        return expensesRepository.update(tx, communityId, id, input);
+      });
+      if (outcome === "bad_category") {
+        return { ok: false, error: { kind: "invalid", message: INACTIVE_CATEGORY } };
+      }
+      if (outcome === null) {
         return null;
       }
-      return { ok: true, value: expense };
+      return { ok: true, value: outcome };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }

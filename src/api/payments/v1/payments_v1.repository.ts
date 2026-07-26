@@ -110,7 +110,18 @@ function mapAllocationRow(row: AllocationRow): PaymentAllocation {
   };
 }
 
-async function fetchAllocations(tx: TxClient, paymentId: string): Promise<PaymentAllocation[]> {
+/**
+ * Aplicaciones activas del pago, SIEMPRE acotadas al alcance del usuario: un
+ * depósito puede repartirse entre comunidades y solo se devuelven las de
+ * comunidades donde el actor tiene membresía activa. Sin este filtro, ver un
+ * pago por una sola de sus comunidades filtraría unidad, concepto e importe de
+ * las demás.
+ */
+async function fetchAllocations(
+  tx: TxClient,
+  paymentId: string,
+  userId: string,
+): Promise<PaymentAllocation[]> {
   const result = await tx.query<AllocationRow>(
     `SELECT pa.id, pa.charge_id, pa.unit_id, u.code AS unit_code,
             c.community_id, f.concept, pa.amount::text AS amount
@@ -118,9 +129,14 @@ async function fetchAllocations(tx: TxClient, paymentId: string): Promise<Paymen
        JOIN billing.charges c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
        JOIN billing.fees f    ON f.customer_id = c.customer_id  AND f.id = c.fee_id
        JOIN community.units u ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
+       JOIN community.community_members cm
+         ON cm.customer_id  = c.customer_id
+        AND cm.community_id = c.community_id
+        AND cm.user_id      = $2
+        AND cm.status       = 'active'
       WHERE pa.payment_id = $1 AND pa.status != 'deleted'
       ORDER BY u.code`,
-    [paymentId],
+    [paymentId, userId],
   );
   return result.rows.map(mapAllocationRow);
 }
@@ -154,7 +170,11 @@ export const paymentsRepository = {
    * Registra el depósito vía billing.sp_register_payment y devuelve la fila
    * creada. La sp devuelve el id por su INOUT `p_payment_id`.
    */
-  async register(tx: TxClient, input: RegisterPaymentInput): Promise<PaymentDetail> {
+  async register(
+    tx: TxClient,
+    userId: string,
+    input: RegisterPaymentInput,
+  ): Promise<PaymentDetail> {
     // El id del pago sale del INOUT p_payment_id (fila que devuelve el CALL).
     // No se busca por timestamps: el trigger de auditoría estampa created_at
     // con clock_timestamp(), que NUNCA iguala transaction_timestamp().
@@ -183,7 +203,9 @@ export const paymentsRepository = {
     if (row === undefined) {
       throw new Error("sp_register_payment no dejó rastro del pago creado");
     }
-    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id) };
+    // El alcance ya se validó antes de llamar (todos los cargos son del actor),
+    // así que el filtro de fetchAllocations no resta nada aquí.
+    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id, userId) };
   },
 
   /**
@@ -248,6 +270,7 @@ export const paymentsRepository = {
   /**
    * Un pago con sus aplicaciones, visible si CUALQUIERA de sus aplicaciones
    * toca una comunidad del alcance del usuario. null = inexistente/fuera.
+   * Las aplicaciones devueltas son solo las de comunidades del actor.
    */
   async getById(tx: TxClient, userId: string, id: string): Promise<PaymentDetail | null> {
     const result = await tx.query<PaymentRow>(
@@ -273,7 +296,7 @@ export const paymentsRepository = {
     if (row === undefined) {
       return null;
     }
-    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id) };
+    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id, userId) };
   },
 
   /** Comunidades (distintas) tocadas por las aplicaciones activas del pago. */
@@ -297,7 +320,13 @@ export const paymentsRepository = {
     return (result.rowCount ?? 0) > 0;
   },
 
-  /** ¿Tiene el usuario membresía activa en TODAS estas comunidades? */
+  /**
+   * ¿Tiene el usuario membresía activa en TODAS estas comunidades?
+   *
+   * CUIDADO: la lista vacía es "todas de ninguna" = true. No es un permiso —
+   * es el vacío lógico. Quien llame debe decidir ANTES qué hacer con un pago
+   * sin comunidades alcanzables, o convertirá esta función en un fail-open.
+   */
   async userReachesAllCommunities(
     tx: TxClient,
     userId: string,

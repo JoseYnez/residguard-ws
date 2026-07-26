@@ -53,6 +53,13 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * Single-flight por sesión: al vencer el TTL, los requests concurrentes de la
+ * MISMA sesión comparten una sola consulta a auth_ws en lugar de dispararle
+ * una por request (mismo patrón que el cliente de JWKS).
+ */
+const inflight = new Map<string, Promise<PermissionsLookup>>();
+
 function pruneIfNeeded(nowMs: number): void {
   if (cache.size <= CACHE_MAX_ENTRIES) {
     return;
@@ -93,12 +100,27 @@ export async function getSessionPermissions(
   sid: string,
   bearerToken: string,
 ): Promise<PermissionsLookup> {
-  const now = Date.now();
   const hit = cache.get(sid);
-  if (hit !== undefined && hit.freshUntilMs > now) {
-    console.log("auth_ws permissions cache hit", sid);
+  if (hit !== undefined && hit.freshUntilMs > Date.now()) {
     return { kind: "ok", permissions: hit.permissions };
   }
+
+  const pending = inflight.get(sid);
+  if (pending !== undefined) {
+    return pending;
+  }
+  const request = fetchSessionPermissions(sid, bearerToken).finally(() => {
+    inflight.delete(sid);
+  });
+  inflight.set(sid, request);
+  return request;
+}
+
+async function fetchSessionPermissions(
+  sid: string,
+  bearerToken: string,
+): Promise<PermissionsLookup> {
+  const now = Date.now();
 
   let response: Response;
   try {
@@ -109,13 +131,7 @@ export async function getSessionPermissions(
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       },
     );
-    console.log(
-      "auth_ws permissions response",
-      response.status,
-      response.statusText,
-    );
   } catch {
-    console.error("auth_ws permissions fetch failed", sid);
     return staleFallback(sid, now);
   }
 
@@ -149,9 +165,4 @@ export async function getSessionPermissions(
     staleUntilMs: now + CACHE_TTL_MS + config.permissionsStaleGraceMs,
   });
   return { kind: "ok", permissions };
-}
-
-/** Invalida la caché de una sesión (p. ej. tras revocarla desde soporte). */
-export function invalidateSessionPermissions(sid: string): void {
-  cache.delete(sid);
 }

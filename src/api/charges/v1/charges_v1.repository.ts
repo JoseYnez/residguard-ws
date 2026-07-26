@@ -50,6 +50,8 @@ export interface ListChargesInput {
   readonly pageSize: number;
   readonly paymentStatus?: string | null;
   readonly overdueOnly?: boolean | null;
+  /** Solo cargos abiertos: activos y con saldo pendiente (los cobrables). */
+  readonly openOnly?: boolean | null;
   readonly from?: string | null;
   readonly to?: string | null;
 }
@@ -114,8 +116,18 @@ export const chargesRepository = {
   async list(tx: TxClient, input: ListChargesInput): Promise<{ items: Charge[]; total: number }> {
     const communityId = input.communityId ?? null;
     const unitId = input.unitId ?? null;
+    // Los dos filtros son opcionales en el WHERE, así que sin ninguno la
+    // consulta devolvería TODOS los cargos del tenant, saltándose la frontera
+    // de comunidad. Hoy las dos rutas inyectan uno desde la URL; este guard
+    // impide que una ruta futura convierta ese vacío lógico en una fuga.
+    if (communityId === null && unitId === null) {
+      throw new Error(
+        "chargesRepository.list exige communityId o unitId: sin alcance devolvería el tenant completo",
+      );
+    }
     const paymentStatus = input.paymentStatus ?? null;
     const overdueOnly = input.overdueOnly === true;
+    const openOnly = input.openOnly === true;
     const from = input.from ?? null;
     const to = input.to ?? null;
     const offset = (input.page - 1) * input.pageSize;
@@ -127,13 +139,15 @@ export const chargesRepository = {
         AND ($3::billing.charge_status IS NULL OR c.payment_status = $3::billing.charge_status)
         AND ($4::boolean IS NOT TRUE
              OR (c.due_date < CURRENT_DATE AND cov.covered < c.applied_amount))
-        AND ($5::date IS NULL OR c.due_date >= $5::date)
-        AND ($6::date IS NULL OR c.due_date <= $6::date)
+        AND ($5::boolean IS NOT TRUE
+             OR (c.status = 'active' AND cov.covered < c.applied_amount))
+        AND ($6::date IS NULL OR c.due_date >= $6::date)
+        AND ($7::date IS NULL OR c.due_date <= $7::date)
     `;
 
     const totalResult = await tx.query<{ count: string }>(
       `SELECT count(*)::bigint AS count ${FROM_WITH_BALANCE} ${where}`,
-      [communityId, unitId, paymentStatus, overdueOnly, from, to],
+      [communityId, unitId, paymentStatus, overdueOnly, openOnly, from, to],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
@@ -147,8 +161,18 @@ export const chargesRepository = {
               c.status, c.created_at, c.updated_at
          ${FROM_WITH_BALANCE} ${where}
         ORDER BY c.due_date DESC, u.code ASC, c.id DESC
-        LIMIT $7 OFFSET $8`,
-      [communityId, unitId, paymentStatus, overdueOnly, from, to, input.pageSize, offset],
+        LIMIT $8 OFFSET $9`,
+      [
+        communityId,
+        unitId,
+        paymentStatus,
+        overdueOnly,
+        openOnly,
+        from,
+        to,
+        input.pageSize,
+        offset,
+      ],
     );
 
     return { items: itemsResult.rows.map(mapRow), total };
