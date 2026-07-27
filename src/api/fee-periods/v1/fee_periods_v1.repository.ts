@@ -156,6 +156,28 @@ export const feePeriodsRepository = {
   },
 
   /**
+   * Edita la etiqueta (null = limpiar → vuelve a la derivada). Devuelve null
+   * si el periodo no existe en esa cuota/comunidad (→ 404 en la route).
+   */
+  async updateLabel(
+    tx: TxClient,
+    communityId: string,
+    feeId: string,
+    id: string,
+    label: string | null,
+  ): Promise<FeePeriod | null> {
+    const result = await tx.query<FeePeriodRow>(
+      `UPDATE billing.fee_periods fp SET label = $1
+        WHERE fp.id = $2 AND fp.fee_id = $3 AND fp.community_id = $4
+          AND fp.status != 'deleted'
+        RETURNING ${SELECT_COLUMNS}`,
+      [label, id, feeId, communityId],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : mapRow(row);
+  },
+
+  /**
    * Baja logica, SOLO sin cargos vivos: un periodo con cargos activos es parte
    * del estado de cuenta y borrarlo lo dejaria colgando de una fila 'deleted'.
    * 'deleted' = no existia; 'has-charges' = existe pero tiene cargos.

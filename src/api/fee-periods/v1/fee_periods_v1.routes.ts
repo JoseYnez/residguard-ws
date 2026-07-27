@@ -12,6 +12,7 @@ import {
   feeScopedIdParamV1V,
   feeScopedParamV1V,
   listFeePeriodsQueryV1V,
+  updateFeePeriodV1V,
 } from "./fee_periods_v1.verifier";
 
 // Recurso fee-periods/v1: los periodos de una cuota, anidados bajo ella
@@ -89,6 +90,34 @@ export async function feePeriodsV1Routes(instance: FastifyInstance): Promise<voi
         return reply.code(status).send({ error: result.error.kind, message: result.error.message });
       }
       return reply.code(201).send(result.value);
+    },
+  );
+
+  // Editar la ETIQUETA (lo único editable: el rango es identidad y
+  // vencimiento/monto tocarían las copias desnormalizadas de los cargos).
+  // `label: null` limpia y vuelve a la derivada.
+  app.patch(
+    "/communities/:communityId/fees/:feeId/periods/:id",
+    {
+      schema: {
+        params: feeScopedIdParamV1V,
+        body: updateFeePeriodV1V,
+        response: { 200: feePeriodV1V, 400: errorResponseV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.feePeriodsUpdate), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const updated = await feePeriodsController.updateLabel(
+        req,
+        req.params.communityId,
+        req.params.feeId,
+        req.params.id,
+        req.body.label ?? null,
+      );
+      if (updated === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(updated);
     },
   );
 

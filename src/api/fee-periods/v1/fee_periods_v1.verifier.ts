@@ -45,6 +45,19 @@ export const createFeePeriodV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+// --- Entrada: editar (PATCH /communities/:communityId/fees/:feeId/periods/:id)
+// Solo la ETIQUETA: es puro display (cero efectos sobre cargos existentes o
+// futuros). El rango es identidad del periodo (se recrea, no se edita) y mover
+// vencimiento/monto con cargos vivos abriria divergencias con sus copias
+// desnormalizadas — decision aparte si algun dia hace falta.
+export const updateFeePeriodV1V = new V.ObjectNotNull(
+  {
+    /** null = limpiar (vuelve a la etiqueta derivada "Enero-2026"). */
+    label: new V.String({ minLength: 1, maxLength: 200 }),
+  },
+  { strictMode: true },
+);
+
 // --- Entrada: listar (GET /communities/:communityId/fees/:feeId/periods) ------
 export const listFeePeriodsQueryV1V = new V.ObjectNotNull(
   {

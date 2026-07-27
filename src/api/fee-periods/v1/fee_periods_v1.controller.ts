@@ -62,6 +62,19 @@ export const feePeriodsController = {
     }
   },
 
+  /** `null` cuando el periodo no existe en la cuota/comunidad → 404. */
+  async updateLabel(
+    req: FastifyRequest,
+    communityId: string,
+    feeId: string,
+    id: string,
+    label: string | null,
+  ): Promise<FeePeriod | null> {
+    return withTransaction(contextFor(req), (tx) =>
+      feePeriodsRepository.updateLabel(tx, communityId, feeId, id, label),
+    );
+  },
+
   async softDelete(
     req: FastifyRequest,
     communityId: string,
