@@ -184,6 +184,7 @@ número JSON (NUMERIC(14,2) en BD).
 | `PERMISSIONS_STALE_GRACE_MINUTES` | Gracia de permisos cacheados si `auth_ws` cae — default 15, `0` = fallar cerrado |
 | `RESIDGUARD_APP_CODE` | appCode de ResidGuard (ancla de autorización) — default `residguard-app` |
 | `CORS_ORIGINS` | Lista blanca separada por comas (SPA dev: `http://localhost:4204`) |
+| `DB_TIMEZONE` | Zona de operación fijada en cada sesión de PG — default `America/Mexico_City`. Solo afecta el recorte a día (`::date`, `CURRENT_DATE`, cortes de saldo), no el instante almacenado |
 | `PORT` / `HOST` | Servicio (default 3003) |
 | `LOG_LEVEL` | pino |
 

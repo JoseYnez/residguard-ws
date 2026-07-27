@@ -30,6 +30,19 @@ const envV = new V.ObjectNotNull({
     // cruzado (mismo origen sigue funcionando). Como las peticiones llevan
     // credenciales, NUNCA se refleja un origen fuera de esta lista.
     CORS_ORIGINS: new V.StringNotNull({ defaultValue: "" }),
+    // Zona horaria de OPERACIÓN, fijada en cada sesión de PostgreSQL.
+    // El instante de un pago llega ya resuelto desde el navegador (ISO-8601
+    // con su offset), así que esto NO decide qué se guarda. Decide cómo se
+    // agrupa por día: `paid_at::date`, `now()` y `CURRENT_DATE` se evalúan en
+    // la zona de la sesión, y con la sesión en UTC un pago de las 19:00 cae en
+    // el día siguiente — se saldría del corte de saldo y del filtro de fechas.
+    // Es una sola zona a propósito: el calendario de negocio es el de la
+    // comunidad, no el de cada equipo que captura.
+    DB_TIMEZONE: new V.StringNotNull({
+        defaultValue: "America/Mexico_City",
+        minLength: 1,
+        maxLength: 64,
+    }),
     PORT: new V.NumberNotNull({ defaultValue: 3003, min: 1, max: 65535 }),
     HOST: new V.StringNotNull({ defaultValue: "0.0.0.0" }),
     LOG_LEVEL: new V.StringNotNull({
@@ -66,6 +79,7 @@ export const config = {
     corsOrigins: env.CORS_ORIGINS.split(",")
         .map((o) => o.trim())
         .filter((o) => o.length > 0),
+    dbTimezone: env.DB_TIMEZONE,
     port: env.PORT,
     host: env.HOST,
     logLevel: env.LOG_LEVEL,

@@ -80,6 +80,10 @@ function mapRow(row: PaymentRow): Payment {
     id: row.id,
     amount: Number(row.amount),
     method: row.method,
+    // Instante absoluto: `pg` lee el TIMESTAMPTZ como un Date de JS (que es un
+    // punto en el tiempo, no una lectura de reloj) y `toISOString` lo emite en
+    // UTC. El cliente lo vuelve a su zona al pintarlo, así que el reloj que ve
+    // el usuario es el suyo aunque el servidor esté en otro continente.
     paidAt: row.paid_at.toISOString(),
     reference: row.reference,
     status: row.status,
@@ -232,6 +236,9 @@ export const paymentsRepository = {
      WHERE c.community_id = $1
        AND p.status != 'deleted'
        AND ($2::billing.payment_method IS NULL OR p.method = $2::billing.payment_method)
+       -- ::date recorta el instante en la zona de la SESIÓN, que el pool fija a
+       -- config.dbTimezone. Filtrar "del 1 al 15" significa así los días de la
+       -- comunidad; en UTC, un pago de las 19:00 del 15 quedaría fuera.
        AND ($3::date IS NULL OR p.paid_at::date >= $3::date)
        AND ($4::date IS NULL OR p.paid_at::date <= $4::date)
     `;

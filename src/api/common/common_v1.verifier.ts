@@ -10,8 +10,19 @@ export const UUID_REGEX =
 /** Fecha de negocio (columnas DATE): YYYY-MM-DD estricto. */
 export const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Instante (columnas TIMESTAMPTZ): fecha con hora opcional. */
-export const ISO_DATETIME_REGEX = /^\d{4}-\d{2}-\d{2}([T ].*)?$/;
+/**
+ * Instante (columnas TIMESTAMPTZ): ISO-8601 completo y **con offset explícito**
+ * (`2026-07-26T19:42:00-06:00` o `...Z`).
+ *
+ * El offset es obligatorio a propósito. Un valor sin zona —una fecha suelta
+ * `2026-07-26`, o un `2026-07-26T19:42:00` naïf— lo interpreta PostgreSQL en la
+ * zona de la SESIÓN, que no es la del equipo que capturó: así es como los pagos
+ * acababan desplazados por el offset completo. Exigiendo la zona, el instante
+ * que se guarda es exactamente el que ocurrió, sin importar dónde corran el
+ * navegador y la base.
+ */
+export const ISO_DATETIME_REGEX =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 /** Dinero NUMERIC(14,2): positivo, máximo 2 decimales. */
 export const MONEY_MAX = 999999999999.99;

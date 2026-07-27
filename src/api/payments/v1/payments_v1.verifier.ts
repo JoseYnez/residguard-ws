@@ -20,6 +20,9 @@ export const createPaymentV1V = new V.ObjectNotNull(
   {
     amount: new V.NumberNotNull({ min: 0.01, max: MONEY_MAX, maxDecimalPlaces: 2 }),
     method: new V.StringNotNull({ in: [...PAYMENT_METHODS] }),
+    // Instante del pago (billing.payments.paid_at es TIMESTAMPTZ). Exige offset
+    // explícito: el cliente resuelve la fecha-hora en SU zona y la manda ya
+    // anclada, así el servidor no tiene que suponer nada. Ausente = now().
     paidAt: new V.String({ regex: ISO_DATETIME_REGEX }),
     reference: new V.String({ maxLength: 200 }),
     allocations: new V.ArrayNotNull(

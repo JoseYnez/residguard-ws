@@ -13,6 +13,13 @@ export const pool = new Pool({
     // Falla rápido si la BD no acepta conexiones, en vez de colgar el request.
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,
+    // Zona de la SESIÓN, no del servidor: se manda en el startup packet de cada
+    // conexión, así que no depende de cómo esté configurado el Postgres de turno
+    // (una imagen de Docker arranca en UTC). Sin esto, todo lo que recorta un
+    // TIMESTAMPTZ a día —`paid_at::date`, `CURRENT_DATE`, el corte de saldo—
+    // usaría el calendario UTC en vez del de la comunidad, y los pagos de la
+    // tarde caerían en el día siguiente. No altera el instante almacenado.
+    options: `-c timezone=${config.dbTimezone}`,
 });
 
 // Sin este listener, un error en un cliente OCIOSO (restart/failover de
