@@ -52,6 +52,14 @@ export const PERMISSIONS = {
     feesCreate: "fees.create",
     feesUpdate: "fees.update",
 
+    // Periodos de cuota ("Mantenimiento 2026 → Enero"): la fila intermedia
+    // cuota→cargos. La generación de cargos los crea sola (sp_ensure_fee_period);
+    // estos códigos cubren verlos y administrarlos por adelantado. Baja lógica
+    // autorizada con `.update`.
+    feePeriodsRead: "fee_periods.read",
+    feePeriodsCreate: "fee_periods.create",
+    feePeriodsUpdate: "fee_periods.update",
+
     // Cargos: lectura del estado de cuenta y registro (asignar una cuota a una
     // unidad). La edición/condonación siguen sin endpoint.
     chargesRead: "charges.read",

@@ -234,19 +234,43 @@ export const chargesRepository = {
   },
 
   /**
-   * Inserta un cargo tomando el contexto (tenant/comunidad) de la unidad y
-   * exigiendo que la cuota sea de esa MISMA comunidad y esté activa. Devuelve
-   * null si la unidad no está activa o la cuota no está disponible (0 filas
-   * insertadas). Puede lanzar 23P01 (ex_charges_no_overlap: periodo solapado
-   * de la misma cuota sobre la unidad) o 23514 (ck_charges_period).
+   * Crea o reusa el PERIODO de la cuota para el rango (via sancionada
+   * billing.sp_ensure_fee_period) y devuelve su id. Se llama UNA vez por
+   * registro multi-unidad: todos los cargos cuelgan del mismo periodo. Puede
+   * lanzar 23P01 (ex_fee_periods_no_overlap: el rango solapa otro periodo) o
+   * P0002 (cuota no activa para el tenant).
    */
-  async create(tx: TxClient, unitId: string, input: CreateChargeInput): Promise<Charge | null> {
+  async ensurePeriod(tx: TxClient, input: CreateChargeInput): Promise<string> {
+    const call = await tx.query<{ p_period_id: string | null }>(
+      `CALL billing.sp_ensure_fee_period($1, $2::date, $3::date, $4::date, NULL, NULL, NULL)`,
+      [input.feeId, input.periodStart, input.periodEnd, input.dueDate],
+    );
+    const periodId = call.rows[0]?.p_period_id ?? null;
+    if (periodId === null) {
+      throw new Error("sp_ensure_fee_period no devolvió el id del periodo");
+    }
+    return periodId;
+  },
+
+  /**
+   * Inserta un cargo del periodo dado tomando el contexto (tenant/comunidad)
+   * de la unidad y exigiendo que la cuota sea de esa MISMA comunidad y esté
+   * activa. Devuelve null si la unidad no está activa o la cuota no está
+   * disponible (0 filas insertadas). Puede lanzar 23505 (uq_charges_period_unit:
+   * la unidad ya tiene cargo de ese periodo) o 23514 (ck_charges_period).
+   */
+  async create(
+    tx: TxClient,
+    unitId: string,
+    periodId: string,
+    input: CreateChargeInput,
+  ): Promise<Charge | null> {
     const result = await tx.query<ChargeRow>(
       `WITH ins AS (
          INSERT INTO billing.charges
-           (customer_id, community_id, fee_id, unit_id,
+           (customer_id, community_id, fee_id, period_id, unit_id,
             period_start, period_end, applied_amount, due_date)
-         SELECT u.customer_id, u.community_id, f.id, u.id,
+         SELECT u.customer_id, u.community_id, f.id, $7, u.id,
                 $3::date, $4::date, $5, $6::date
            FROM community.units u
            JOIN billing.fees f
@@ -269,7 +293,15 @@ export const chargesRepository = {
          FROM ins
          JOIN billing.fees f    ON f.customer_id = ins.customer_id AND f.id = ins.fee_id
          JOIN community.units u ON u.customer_id = ins.customer_id AND u.id = ins.unit_id`,
-      [unitId, input.feeId, input.periodStart, input.periodEnd, input.appliedAmount, input.dueDate],
+      [
+        unitId,
+        input.feeId,
+        input.periodStart,
+        input.periodEnd,
+        input.appliedAmount,
+        input.dueDate,
+        periodId,
+      ],
     );
     const row = result.rows[0];
     return row === undefined ? null : mapRow(row);

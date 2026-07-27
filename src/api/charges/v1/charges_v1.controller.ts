@@ -138,10 +138,33 @@ export const chargesController = {
           });
         }
 
+        // El PERIODO primero, y una sola vez: todos los cargos del alta cuelgan
+        // de la misma fila (create-or-reuse; un rango que solape otro periodo
+        // de la cuota aborta aquí, antes de tocar unidad alguna).
+        let periodId: string;
+        try {
+          periodId = await chargesRepository.ensurePeriod(tx, input);
+        } catch (err) {
+          const pg = asPgError(err);
+          if (pg?.code === "23P01") {
+            throw new ChargeCreationError({
+              kind: "conflict",
+              message: "El rango se solapa con otro periodo de la cuota.",
+            });
+          }
+          if (pg?.code === "P0002") {
+            throw new ChargeCreationError({
+              kind: "invalid",
+              message: "La cuota no está disponible para la comunidad.",
+            });
+          }
+          throw err;
+        }
+
         const created: Charge[] = [];
         for (const unit of units) {
           try {
-            const charge = await chargesRepository.create(tx, unit.id, input);
+            const charge = await chargesRepository.create(tx, unit.id, periodId, input);
             if (charge === null) {
               // 0 filas con la unidad ya validada → la cuota no está activa
               // o no pertenece a esta comunidad.
@@ -157,10 +180,11 @@ export const chargesController = {
             }
             // Errores esperables de PG, con la unidad que falló en el mensaje.
             const pg = asPgError(err);
-            if (pg?.code === "23P01") {
+            if (pg?.code === "23505") {
+              // uq_charges_period_unit: la unidad ya tiene cargo del periodo.
               throw new ChargeCreationError({
                 kind: "conflict",
-                message: `Ya existe un cargo de esa cuota que solapa el periodo en la unidad ${unit.code}.`,
+                message: `La unidad ${unit.code} ya tiene un cargo de ese periodo.`,
               });
             }
             if (pg?.code === "23514") {

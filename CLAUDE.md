@@ -36,6 +36,7 @@ residguard_ws/
 │   │   ├── units/v1/                ← unidades (CRUD)
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
 │   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
+│   │   ├── fee-periods/v1/          ← periodos de cuota (lista/alta/baja; la generación de cargos los crea sola)
 │   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
@@ -88,7 +89,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (28 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (31 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke` es `execute` (operación sancionada, no una
