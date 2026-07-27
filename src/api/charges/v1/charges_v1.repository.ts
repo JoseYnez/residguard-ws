@@ -11,6 +11,10 @@ export interface Charge {
   readonly unitCode: string;
   readonly communityId: string;
   readonly feeId: string;
+  readonly periodId: string;
+  /** Nombre propio del periodo ("Cuota extraordinaria bardas"); null = sin
+   *  etiqueta (el cliente deriva una del rango). */
+  readonly periodLabel: string | null;
   readonly concept: string;
   readonly periodStart: string;
   readonly periodEnd: string;
@@ -62,6 +66,8 @@ interface ChargeRow {
   unit_code: string;
   community_id: string;
   fee_id: string;
+  period_id: string;
+  period_label: string | null;
   concept: string;
   period_start: string;
   period_end: string;
@@ -82,6 +88,8 @@ function mapRow(row: ChargeRow): Charge {
     unitCode: row.unit_code,
     communityId: row.community_id,
     feeId: row.fee_id,
+    periodId: row.period_id,
+    periodLabel: row.period_label,
     concept: row.concept,
     periodStart: row.period_start,
     periodEnd: row.period_end,
@@ -101,6 +109,8 @@ const FROM_WITH_BALANCE = `
   FROM billing.charges c
   JOIN billing.fees f
     ON f.customer_id = c.customer_id AND f.id = c.fee_id
+  JOIN billing.fee_periods fp
+    ON fp.customer_id = c.customer_id AND fp.id = c.period_id
   JOIN community.units u
     ON u.customer_id = c.customer_id AND u.id = c.unit_id
   LEFT JOIN LATERAL (
@@ -152,7 +162,8 @@ export const chargesRepository = {
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<ChargeRow>(
-      `SELECT c.id, c.unit_id, u.code AS unit_code, c.community_id, c.fee_id, f.concept,
+      `SELECT c.id, c.unit_id, u.code AS unit_code, c.community_id, c.fee_id,
+              c.period_id, fp.label AS period_label, f.concept,
               c.period_start::text AS period_start, c.period_end::text AS period_end,
               c.applied_amount::text AS applied_amount,
               (c.applied_amount - cov.covered)::text AS balance,
@@ -279,11 +290,12 @@ export const chargesRepository = {
             AND f.id           = $2
             AND f.status       = 'active'
           WHERE u.id = $1 AND u.status = 'active'
-         RETURNING customer_id, id, unit_id, community_id, fee_id, period_start,
-                   period_end, applied_amount, due_date, payment_status, status,
-                   created_at, updated_at
+         RETURNING customer_id, id, unit_id, community_id, fee_id, period_id,
+                   period_start, period_end, applied_amount, due_date,
+                   payment_status, status, created_at, updated_at
        )
-       SELECT ins.id, ins.unit_id, u.code AS unit_code, ins.community_id, ins.fee_id, f.concept,
+       SELECT ins.id, ins.unit_id, u.code AS unit_code, ins.community_id, ins.fee_id,
+              ins.period_id, fp.label AS period_label, f.concept,
               ins.period_start::text AS period_start, ins.period_end::text AS period_end,
               ins.applied_amount::text AS applied_amount,
               ins.applied_amount::text AS balance,
@@ -291,8 +303,9 @@ export const chargesRepository = {
               (ins.due_date < CURRENT_DATE) AS overdue,
               ins.status, ins.created_at, ins.updated_at
          FROM ins
-         JOIN billing.fees f    ON f.customer_id = ins.customer_id AND f.id = ins.fee_id
-         JOIN community.units u ON u.customer_id = ins.customer_id AND u.id = ins.unit_id`,
+         JOIN billing.fees f         ON f.customer_id  = ins.customer_id AND f.id  = ins.fee_id
+         JOIN billing.fee_periods fp ON fp.customer_id = ins.customer_id AND fp.id = ins.period_id
+         JOIN community.units u      ON u.customer_id  = ins.customer_id AND u.id  = ins.unit_id`,
       [
         unitId,
         input.feeId,

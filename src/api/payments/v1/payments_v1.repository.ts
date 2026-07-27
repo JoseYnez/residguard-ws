@@ -37,10 +37,21 @@ export interface PaymentUnitRef {
   readonly code: string;
 }
 
+/** Periodo alcanzado por un pago. `label` null = sin alias propio (el cliente
+ *  deriva uno del rango). */
+export interface PaymentPeriodRef {
+  readonly id: string;
+  readonly label: string | null;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+}
+
 export interface PaymentListItem extends Payment {
   readonly allocatedToCommunity: number;
   /** Unidades (de la comunidad filtrada) cuyas aplicaciones cubre el pago. */
   readonly units: PaymentUnitRef[];
+  /** Periodos (distintos) de los cargos que el pago cubrió en la comunidad. */
+  readonly periods: PaymentPeriodRef[];
 }
 
 export interface RegisterPaymentInput {
@@ -231,6 +242,8 @@ export const paymentsRepository = {
         ON pa.customer_id = p.customer_id AND pa.payment_id = p.id AND pa.status != 'deleted'
       JOIN billing.charges c
         ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+      JOIN billing.fee_periods fp
+        ON fp.customer_id = c.customer_id AND fp.id = c.period_id
       JOIN community.units u
         ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
      WHERE c.community_id = $1
@@ -250,12 +263,15 @@ export const paymentsRepository = {
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<
-      PaymentRow & { allocated: string; units: PaymentUnitRef[] }
+      PaymentRow & { allocated: string; units: PaymentUnitRef[]; periods: PaymentPeriodRef[] }
     >(
       `SELECT p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
               p.status, p.created_at, p.updated_at,
               SUM(pa.amount)::text AS allocated,
-              jsonb_agg(DISTINCT jsonb_build_object('id', u.id, 'code', u.code)) AS units
+              jsonb_agg(DISTINCT jsonb_build_object('id', u.id, 'code', u.code)) AS units,
+              jsonb_agg(DISTINCT jsonb_build_object(
+                'id', fp.id, 'label', fp.label,
+                'periodStart', fp.period_start, 'periodEnd', fp.period_end)) AS periods
          ${fromWhere}
         GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference, p.status,
                  p.created_at, p.updated_at
@@ -269,6 +285,9 @@ export const paymentsRepository = {
         ...mapRow(row),
         allocatedToCommunity: Number(row.allocated),
         units: row.units,
+        // DISTINCT del agregado ordena por el jsonb, no por fecha: se reordena
+        // aqui para que el listado lea cronologico.
+        periods: [...row.periods].sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
       })),
       total,
     };

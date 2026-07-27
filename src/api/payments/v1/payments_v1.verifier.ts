@@ -108,6 +108,16 @@ export const paymentListItemV1V = new V.ObjectNotNull({
       code: new V.StringNotNull(),
     }),
   ),
+  /** Periodos (distintos, cronológicos) de los cargos cubiertos. `label` null
+   *  = sin alias propio; el cliente deriva uno del rango. */
+  periods: new V.ArrayNotNull(
+    new V.ObjectNotNull({
+      id: new V.StringNotNull(),
+      label: new V.String(),
+      periodStart: new V.StringNotNull(),
+      periodEnd: new V.StringNotNull(),
+    }),
+  ),
 });
 
 export const paymentListV1V = new V.ObjectNotNull({

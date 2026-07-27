@@ -78,6 +78,9 @@ export const chargeV1V = new V.ObjectNotNull({
   unitCode: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
   feeId: new V.StringNotNull(),
+  periodId: new V.StringNotNull(),
+  /** Nombre propio del periodo; null = sin etiqueta (el cliente deriva una). */
+  periodLabel: new V.String(),
   concept: new V.StringNotNull(),
   periodStart: new V.StringNotNull(),
   periodEnd: new V.StringNotNull(),
