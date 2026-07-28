@@ -11,18 +11,24 @@ export interface Charge {
   readonly unitCode: string;
   readonly communityId: string;
   readonly feeId: string;
-  readonly periodId: string;
+  /** Periodo del cargo; null = cargo SUELTO (no devenga periodo — §4 de la BD). */
+  readonly periodId: string | null;
   /** Nombre propio del periodo ("Cuota extraordinaria bardas"); null = sin
-   *  etiqueta (el cliente deriva una del rango). */
+   *  etiqueta (el cliente deriva una del rango) o cargo suelto. */
   readonly periodLabel: string | null;
   readonly concept: string;
-  readonly periodStart: string;
-  readonly periodEnd: string;
+  /** Rango del periodo; null en un cargo suelto (viaja con `periodId`). */
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
+  /** Piezas que cubre el cargo (2 tarjetas). Siempre 1 en un cargo devengado. */
+  readonly quantity: number;
   readonly appliedAmount: number;
   readonly balance: number;
   readonly dueDate: string;
   readonly paymentStatus: string;
   readonly overdue: boolean;
+  /** Detalle libre del cargo (folios, motivo de la multa). */
+  readonly note: string | null;
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -34,6 +40,21 @@ export interface CreateChargeInput {
   readonly periodEnd: string;
   readonly appliedAmount: number;
   readonly dueDate: string;
+}
+
+/**
+ * Alta de un cargo SUELTO: la venta de N tarjetas de acceso, una multa. No hay
+ * periodo — la cuota (`one_time`) solo presta concepto y precio unitario — y por
+ * eso se puede repetir cuantas veces haga falta sobre la misma unidad.
+ * `appliedAmount` es el TOTAL; omitirlo deja que el procedure calcule
+ * base_amount × quantity.
+ */
+export interface AddUnitChargeInput {
+  readonly feeId: string;
+  readonly quantity: number;
+  readonly appliedAmount?: number | null;
+  readonly dueDate?: string | null;
+  readonly note?: string | null;
 }
 
 /** Generación de cargos de una cuota en un rango (delega en el procedure). */
@@ -66,16 +87,18 @@ interface ChargeRow {
   unit_code: string;
   community_id: string;
   fee_id: string;
-  period_id: string;
+  period_id: string | null;
   period_label: string | null;
   concept: string;
-  period_start: string;
-  period_end: string;
+  period_start: string | null;
+  period_end: string | null;
+  quantity: number;
   applied_amount: string;
   balance: string;
   due_date: string;
   payment_status: string;
   overdue: boolean;
+  note: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -93,23 +116,40 @@ function mapRow(row: ChargeRow): Charge {
     concept: row.concept,
     periodStart: row.period_start,
     periodEnd: row.period_end,
+    quantity: Number(row.quantity),
     appliedAmount: Number(row.applied_amount),
     balance: Number(row.balance),
     dueDate: row.due_date,
     paymentStatus: row.payment_status,
     overdue: row.overdue,
+    note: row.note,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
+/** Columnas del contrato Charge. Una sola definición para el listado y para la
+ *  relectura tras un alta: si divergen, `mapRow` recibe filas incompletas. */
+const CHARGE_COLUMNS = `
+  c.id, c.unit_id, u.code AS unit_code, c.community_id, c.fee_id,
+  c.period_id, fp.label AS period_label, f.concept,
+  c.period_start::text AS period_start, c.period_end::text AS period_end,
+  c.quantity, c.applied_amount::text AS applied_amount,
+  (c.applied_amount - cov.covered)::text AS balance,
+  c.due_date::text AS due_date, c.payment_status,
+  (c.due_date < CURRENT_DATE AND cov.covered < c.applied_amount) AS overdue,
+  c.note, c.status, c.created_at, c.updated_at
+`;
+
 /** Cargos con saldo: aplicaciones y condonaciones activas agregadas por cargo. */
 const FROM_WITH_BALANCE = `
   FROM billing.charges c
   JOIN billing.fees f
     ON f.customer_id = c.customer_id AND f.id = c.fee_id
-  JOIN billing.fee_periods fp
+  -- LEFT: un cargo SUELTO no tiene periodo. Con un INNER, una venta de tarjetas
+  -- desaparecería del estado de cuenta y del picker de pagos.
+  LEFT JOIN billing.fee_periods fp
     ON fp.customer_id = c.customer_id AND fp.id = c.period_id
   JOIN community.units u
     ON u.customer_id = c.customer_id AND u.id = c.unit_id
@@ -120,6 +160,17 @@ const FROM_WITH_BALANCE = `
                       WHERE w.charge_id = c.id AND w.status <> 'deleted'), 0) AS covered
   ) cov ON true
 `;
+
+/** Un cargo por id, con saldo y `overdue` derivados. Módulo (no método) para
+ *  que el alta pueda releer la fila recién creada sin `this`. */
+async function selectChargeById(tx: TxClient, id: string): Promise<Charge | null> {
+  const result = await tx.query<ChargeRow>(
+    `SELECT ${CHARGE_COLUMNS} ${FROM_WITH_BALANCE} WHERE c.id = $1`,
+    [id],
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : mapRow(row);
+}
 
 export const chargesRepository = {
   /** Cargos del alcance pedido (paginado), con saldo y `overdue` derivados. */
@@ -162,14 +213,7 @@ export const chargesRepository = {
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<ChargeRow>(
-      `SELECT c.id, c.unit_id, u.code AS unit_code, c.community_id, c.fee_id,
-              c.period_id, fp.label AS period_label, f.concept,
-              c.period_start::text AS period_start, c.period_end::text AS period_end,
-              c.applied_amount::text AS applied_amount,
-              (c.applied_amount - cov.covered)::text AS balance,
-              c.due_date::text AS due_date, c.payment_status,
-              (c.due_date < CURRENT_DATE AND cov.covered < c.applied_amount) AS overdue,
-              c.status, c.created_at, c.updated_at
+      `SELECT ${CHARGE_COLUMNS}
          ${FROM_WITH_BALANCE} ${where}
         ORDER BY c.due_date DESC, u.code ASC, c.id DESC
         LIMIT $8 OFFSET $9`,
@@ -291,17 +335,17 @@ export const chargesRepository = {
             AND f.status       = 'active'
           WHERE u.id = $1 AND u.status = 'active'
          RETURNING customer_id, id, unit_id, community_id, fee_id, period_id,
-                   period_start, period_end, applied_amount, due_date,
-                   payment_status, status, created_at, updated_at
+                   period_start, period_end, quantity, applied_amount, due_date,
+                   payment_status, note, status, created_at, updated_at
        )
        SELECT ins.id, ins.unit_id, u.code AS unit_code, ins.community_id, ins.fee_id,
               ins.period_id, fp.label AS period_label, f.concept,
               ins.period_start::text AS period_start, ins.period_end::text AS period_end,
-              ins.applied_amount::text AS applied_amount,
+              ins.quantity, ins.applied_amount::text AS applied_amount,
               ins.applied_amount::text AS balance,
               ins.due_date::text AS due_date, ins.payment_status,
               (ins.due_date < CURRENT_DATE) AS overdue,
-              ins.status, ins.created_at, ins.updated_at
+              ins.note, ins.status, ins.created_at, ins.updated_at
          FROM ins
          JOIN billing.fees f         ON f.customer_id  = ins.customer_id AND f.id  = ins.fee_id
          JOIN billing.fee_periods fp ON fp.customer_id = ins.customer_id AND fp.id = ins.period_id
@@ -318,6 +362,48 @@ export const chargesRepository = {
     );
     const row = result.rows[0];
     return row === undefined ? null : mapRow(row);
+  },
+
+  /**
+   * Registra un cargo SUELTO sobre la unidad vía la vía sancionada
+   * billing.sp_add_unit_charge y devuelve la fila creada. La sp exige cuota
+   * ACTIVA y `one_time` de la comunidad de la unidad, y devuelve el id por su
+   * INOUT `p_charge_id`.
+   *
+   * NO es idempotente, a propósito: dos llamadas registran dos ventas — es la
+   * diferencia entre este alta y la de un cargo devengado, que
+   * `uq_charges_period_unit` limita a uno por periodo y unidad.
+   *
+   * Puede lanzar P0002 (cuota o unidad fuera de alcance / no activas), 22023
+   * (la cuota es recurrente) o 23514 (cantidad o monto inválidos).
+   */
+  async addUnitCharge(
+    tx: TxClient,
+    unitId: string,
+    input: AddUnitChargeInput,
+  ): Promise<Charge | null> {
+    const call = await tx.query<{ p_charge_id: string | null }>(
+      `CALL billing.sp_add_unit_charge($1, $2, $3::int, $4, $5::date, $6, NULL)`,
+      [
+        input.feeId,
+        unitId,
+        input.quantity,
+        input.appliedAmount ?? null,
+        input.dueDate ?? null,
+        input.note ?? null,
+      ],
+    );
+    const chargeId = call.rows[0]?.p_charge_id ?? null;
+    if (chargeId === null) {
+      throw new Error("sp_add_unit_charge no devolvió el id del cargo");
+    }
+    return selectChargeById(tx, chargeId);
+  },
+
+  /** Un cargo por id, con saldo y `overdue` derivados (misma forma que el
+   *  listado). null = inexistente o de otro tenant (RLS). */
+  getById(tx: TxClient, id: string): Promise<Charge | null> {
+    return selectChargeById(tx, id);
   },
 
   /**

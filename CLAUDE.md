@@ -37,7 +37,7 @@ residguard_ws/
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
 │   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
 │   │   ├── fee-periods/v1/          ← periodos de cuota (lista/alta/baja; la generación de cargos los crea sola)
-│   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad + anulación
+│   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad + cargo suelto (sin periodo) + anulación
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
@@ -145,9 +145,17 @@ responsabilidad por archivo que en `admin_ws`.
   cero SQL fuera de `withTransaction`.
 - **Vías sancionadas de billing**: registrar pago →
   `billing.sp_register_payment`; anular pago → soft-delete de aplicaciones +
-  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; saldo de
-  comunidad → `billing.fn_get_community_balance`. `payment_status` nunca se
-  escribe a mano; `overdue` SIEMPRE se deriva en lectura.
+  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; cargo
+  suelto → `billing.sp_add_unit_charge`; saldo de comunidad →
+  `billing.fn_get_community_balance`. `payment_status` nunca se escribe a mano;
+  `overdue` SIEMPRE se deriva en lectura.
+- **Dos formas de cargo.** El DEVENGADO cuelga de un periodo de cuota (uno por
+  periodo y unidad, `uq_charges_period_unit`). El SUELTO no tiene periodo
+  (`period_id`, `period_start` y `period_end` van null juntos) y es
+  **repetible**: es la venta de dos tarjetas de acceso o una multa, y
+  registrarlo dos veces son dos ventas. Consecuencia para todo SQL nuevo que
+  toque cargos: el JOIN con `billing.fee_periods` es **LEFT**, siempre — con un
+  INNER, las ventas desaparecen del estado de cuenta y de los pagos.
 - Errores esperables de PG (23505/23P01/23503/23514/P0002) se traducen a
   respuestas tipadas con `core/http/pg_errors.ts`; nunca burbujea el mensaje
   crudo.

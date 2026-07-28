@@ -64,10 +64,11 @@ export const paymentAllocationV1V = new V.ObjectNotNull({
   amount: new V.NumberNotNull(),
   /** Periodo del cargo cubierto (mismos campos que `periods` del listado): el
    *  detalle dice a QUÉ periodo se aplicó cada parte del depósito. `label`
-   *  null = sin alias propio; el cliente deriva uno del rango. */
+   *  null = sin alias propio; el cliente deriva uno del rango. Los TRES van
+   *  null si el cargo es SUELTO (una venta de tarjetas no devenga periodo). */
   periodLabel: new V.String(),
-  periodStart: new V.StringNotNull(),
-  periodEnd: new V.StringNotNull(),
+  periodStart: new V.String(),
+  periodEnd: new V.String(),
 });
 
 // --- Salida: un pago (encabezado) ----------------------------------------------------

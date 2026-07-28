@@ -13,6 +13,7 @@ import {
 } from "../../common/common_v1.verifier";
 import { chargesController } from "./charges_v1.controller";
 import {
+  addAdhocChargesV1V,
   chargeListV1V,
   createChargesV1V,
   createdChargesV1V,
@@ -25,8 +26,9 @@ import {
 // Recurso charges/v1: estado de cuenta por COMUNIDAD (todas sus unidades, con
 // filtro opcional por unidad) o por unidad (alimenta el flujo de pagos),
 // REGISTRO de una cuota sobre una o varias unidades de la comunidad (un cargo
-// por unidad, transacción todo-o-nada) y ANULACIÓN de un cargo (baja lógica,
-// solo mientras no tenga pagos ni condonaciones).
+// por unidad, transacción todo-o-nada), registro de cargos SUELTOS (conceptos
+// no recurrentes y repetibles, sin periodo) y ANULACIÓN de un cargo (baja
+// lógica, solo mientras no tenga pagos ni condonaciones).
 
 export async function chargesV1Routes(instance: FastifyInstance): Promise<void> {
   const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
@@ -117,6 +119,43 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
       if (!result.ok) {
         const status = result.error.kind === "conflict" ? 409 : 400;
         return reply.code(status).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(201).send({ items: result.value, total: result.value.length });
+    },
+  );
+
+  // Registrar cargos SUELTOS: un concepto no recurrente y repetible (venta de
+  // tarjetas de acceso, multa) sobre 1..N unidades. Sin periodo, y por eso NO
+  // idempotente: repetir la llamada registra otra venta. Mismo permiso que el
+  // alta por periodo — sigue siendo crear un cargo.
+  app.post(
+    "/communities/:communityId/charges/adhoc",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        body: addAdhocChargesV1V,
+        response: {
+          201: createdChargesV1V,
+          400: errorResponseV1V,
+          404: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.chargesCreate), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const b = req.body;
+      const result = await chargesController.addAdhoc(req, req.params.communityId, {
+        feeId: b.feeId,
+        unitIds: b.unitIds,
+        quantity: b.quantity ?? 1,
+        appliedAmount: b.appliedAmount ?? null,
+        dueDate: b.dueDate ?? null,
+        note: b.note ?? null,
+      });
+      if (!result.ok) {
+        // Sin rama 409: aquí no hay unicidad que violar — ese es justamente el
+        // punto de un cargo suelto.
+        return reply.code(400).send({ error: result.error.kind, message: result.error.message });
       }
       return reply.code(201).send({ items: result.value, total: result.value.length });
     },

@@ -27,10 +27,12 @@ export interface PaymentAllocation {
   readonly amount: number;
   /** Periodo del cargo cubierto, resuelto EN VIVO (igual que `periods` del
    *  listado): un periodo renombrado después del pago se lee ya renombrado.
-   *  `label` null = sin alias propio; el cliente deriva uno del rango. */
+   *  `label` null = sin alias propio; el cliente deriva uno del rango. Los TRES
+   *  van null cuando el cargo es SUELTO (una venta de tarjetas no devenga
+   *  periodo); el concepto y la cantidad son entonces toda su identidad. */
   readonly periodLabel: string | null;
-  readonly periodStart: string;
-  readonly periodEnd: string;
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
 }
 
 export interface PaymentDetail extends Payment {
@@ -118,8 +120,8 @@ interface AllocationRow {
   concept: string;
   amount: string;
   period_label: string | null;
-  period_start: string;
-  period_end: string;
+  period_start: string | null;
+  period_end: string | null;
 }
 
 function mapAllocationRow(row: AllocationRow): PaymentAllocation {
@@ -162,7 +164,10 @@ async function fetchAllocations(
        FROM billing.payment_allocations pa
        JOIN billing.charges c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
        JOIN billing.fees f    ON f.customer_id = c.customer_id  AND f.id = c.fee_id
-       JOIN billing.fee_periods fp
+       -- LEFT: un cargo SUELTO (venta de tarjetas) no tiene periodo. Con un
+       -- INNER, su aplicación desaparecería del detalle y la suma de las
+       -- aplicaciones mostradas no cuadraría con el monto del depósito.
+       LEFT JOIN billing.fee_periods fp
          ON fp.customer_id = c.customer_id AND fp.id = c.period_id
        JOIN community.units u ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
        JOIN community.community_members cm
@@ -263,7 +268,9 @@ export const paymentsRepository = {
         ON pa.customer_id = p.customer_id AND pa.payment_id = p.id AND pa.status != 'deleted'
       JOIN billing.charges c
         ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
-      JOIN billing.fee_periods fp
+      -- LEFT: un cargo SUELTO no tiene periodo. Con un INNER, un depósito que
+      -- solo cubre ventas de tarjetas no aparecería en el listado.
+      LEFT JOIN billing.fee_periods fp
         ON fp.customer_id = c.customer_id AND fp.id = c.period_id
       JOIN community.units u
         ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
@@ -290,9 +297,14 @@ export const paymentsRepository = {
               p.status, p.created_at, p.updated_at,
               SUM(pa.amount)::text AS allocated,
               jsonb_agg(DISTINCT jsonb_build_object('id', u.id, 'code', u.code)) AS units,
-              jsonb_agg(DISTINCT jsonb_build_object(
+              -- FILTER: los cargos SUELTOS no tienen periodo y sin él el
+              -- agregado metería un objeto de puros null en la lista. Un pago
+              -- que solo cubre ventas queda con la lista vacía (COALESCE
+              -- abajo), que es exactamente lo que hay que decir.
+              COALESCE(jsonb_agg(DISTINCT jsonb_build_object(
                 'id', fp.id, 'label', fp.label,
-                'periodStart', fp.period_start, 'periodEnd', fp.period_end)) AS periods
+                'periodStart', fp.period_start, 'periodEnd', fp.period_end))
+                FILTER (WHERE fp.id IS NOT NULL), '[]'::jsonb) AS periods
          ${fromWhere}
         GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference, p.status,
                  p.created_at, p.updated_at

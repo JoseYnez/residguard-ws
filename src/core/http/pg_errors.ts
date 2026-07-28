@@ -34,6 +34,9 @@ export interface PgErrorMessages {
     readonly check?: string;
     /** P0002 no_data_found (procedures: registro inexistente para el tenant). */
     readonly notFound?: string;
+    /** 22023 invalid_parameter_value (procedures: argumento rechazado por una
+     *  regla de negocio — p. ej. una cuota recurrente donde se espera one_time). */
+    readonly parameter?: string;
 }
 
 export function translatePgError(err: unknown, messages: PgErrorMessages): BusinessError {
@@ -52,6 +55,9 @@ export function translatePgError(err: unknown, messages: PgErrorMessages): Busin
     }
     if (pg?.code === "P0002" && messages.notFound !== undefined) {
         return { kind: "invalid", message: messages.notFound };
+    }
+    if (pg?.code === "22023" && messages.parameter !== undefined) {
+        return { kind: "invalid", message: messages.parameter };
     }
     throw err;
 }

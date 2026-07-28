@@ -10,8 +10,8 @@ import {
 // Contratos del recurso charges (billing.charges): estado de cuenta por
 // comunidad (todas sus unidades) o por unidad, y REGISTRO de una cuota sobre
 // UNA O VARIAS unidades por un periodo (un cargo por unidad, transacción
-// todo-o-nada). Edición/condonación siguen sin endpoint; el estatus de cobro
-// lo mantienen los procedures de pago.
+// todo-o-nada) o como cargo SUELTO (sin periodo, repetible). Edición/condonación
+// siguen sin endpoint; el estatus de cobro lo mantienen los procedures de pago.
 
 export const PAYMENT_STATUSES = ["pending", "partial", "paid", "waived"] as const;
 
@@ -29,6 +29,32 @@ export const createChargesV1V = new V.ObjectNotNull(
     /** Monto aplicado a CADA unidad (puede diferir del base de la cuota). */
     appliedAmount: new V.NumberNotNull({ min: 0, max: MONEY_MAX, maxDecimalPlaces: 2 }),
     dueDate: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+  },
+  { strictMode: true },
+);
+
+// --- Entrada: cargo suelto (POST /communities/:communityId/charges/adhoc) ------
+// Un concepto NO recurrente y REPETIBLE (venta de tarjetas de acceso, multa)
+// sobre 1..N unidades: sin periodo, y por tanto sin las fechas del alta normal.
+// Repetir la llamada registra otra venta — no es idempotente a propósito.
+export const addAdhocChargesV1V = new V.ObjectNotNull(
+  {
+    /** Cuota de PAGO ÚNICO (one_time) que presta concepto y precio unitario. */
+    feeId: new V.StringNotNull({ regex: UUID_REGEX }),
+    /** Unidades a cargar. A diferencia del alta por periodo, una unidad PUEDE
+     *  repetirse: son dos ventas distintas a la misma unidad. */
+    unitIds: new V.ArrayNotNull(new V.StringNotNull({ regex: UUID_REGEX }), {
+      minLength: 1,
+      maxLength: 500,
+    }),
+    /** Piezas que cubre cada cargo (2 tarjetas). Default 1 en el backend. */
+    quantity: new V.Number({ min: 1, max: 9999, maxDecimalPlaces: 0 }),
+    /** Monto TOTAL por unidad. Omitido = monto base de la cuota × cantidad. */
+    appliedAmount: new V.Number({ min: 0, max: MONEY_MAX, maxDecimalPlaces: 2 }),
+    /** Vencimiento. Omitido = hoy (una venta se cobra al momento). */
+    dueDate: new V.String({ regex: ISO_DATE_REGEX }),
+    /** Detalle libre: folios de las tarjetas, motivo de la multa. */
+    note: new V.String({ maxLength: 500 }),
   },
   { strictMode: true },
 );
@@ -78,12 +104,17 @@ export const chargeV1V = new V.ObjectNotNull({
   unitCode: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
   feeId: new V.StringNotNull(),
-  periodId: new V.StringNotNull(),
-  /** Nombre propio del periodo; null = sin etiqueta (el cliente deriva una). */
+  /** Periodo del cargo; null = cargo SUELTO (no devenga periodo). */
+  periodId: new V.String(),
+  /** Nombre propio del periodo; null = sin etiqueta (el cliente deriva una) o
+   *  cargo suelto. */
   periodLabel: new V.String(),
   concept: new V.StringNotNull(),
-  periodStart: new V.StringNotNull(),
-  periodEnd: new V.StringNotNull(),
+  /** Rango del periodo; null en un cargo suelto (viaja con `periodId`). */
+  periodStart: new V.String(),
+  periodEnd: new V.String(),
+  /** Piezas que cubre el cargo. Siempre 1 en un cargo devengado. */
+  quantity: new V.NumberNotNull(),
   appliedAmount: new V.NumberNotNull(),
   /** Saldo pendiente = applied - (pagos + condonaciones activas). */
   balance: new V.NumberNotNull(),
@@ -91,6 +122,8 @@ export const chargeV1V = new V.ObjectNotNull({
   paymentStatus: new V.StringNotNull(),
   /** DERIVADO en lectura: vencido y no cubierto. Nunca se almacena. */
   overdue: new V.BooleanNotNull(),
+  /** Detalle libre del cargo (folios, motivo de la multa). */
+  note: new V.String(),
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),

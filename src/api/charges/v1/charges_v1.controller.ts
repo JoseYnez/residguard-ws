@@ -9,6 +9,7 @@ import {
 } from "../../../core/http/pg_errors";
 import {
   chargesRepository,
+  type AddUnitChargeInput,
   type Charge,
   type CreateChargeInput,
   type GenerateForFeeInput,
@@ -20,6 +21,11 @@ import {
 
 /** Entrada del alta múltiple: la misma cuota/periodo sobre 1..N unidades. */
 export interface CreateChargesInput extends CreateChargeInput {
+  readonly unitIds: readonly string[];
+}
+
+/** Entrada del alta SUELTA: el mismo concepto/cantidad sobre 1..N unidades. */
+export interface AddUnitChargesInput extends AddUnitChargeInput {
   readonly unitIds: readonly string[];
 }
 
@@ -231,6 +237,95 @@ export const chargesController = {
               });
             }
             throw err;
+          }
+        }
+        return created;
+      });
+      return { ok: true, value: items };
+    } catch (err) {
+      if (err instanceof ChargeCreationError) {
+        return { ok: false, error: err.business };
+      }
+      throw err;
+    }
+  },
+
+  /**
+   * Registra un cargo SUELTO — un concepto no recurrente y repetible: la venta
+   * de N tarjetas de acceso, una multa — sobre cada unidad pedida, en una sola
+   * transacción todo-o-nada.
+   *
+   * No tiene periodo (la cuota `one_time` solo presta concepto y precio) y por
+   * eso NO es idempotente: llamarlo dos veces con la misma unidad registra dos
+   * ventas. Esa es justo la diferencia con {@link create}, donde
+   * `uq_charges_period_unit` limita a un cargo por periodo y unidad.
+   */
+  async addAdhoc(
+    req: FastifyRequest,
+    communityId: string,
+    input: AddUnitChargesInput,
+  ): Promise<MutationResult<Charge[]>> {
+    // A diferencia del alta devengada, aquí repetir una unidad SÍ es legítimo
+    // (dos ventas a la misma casa), así que no se deduplica: cada aparición
+    // registra su propio cargo.
+    try {
+      const items = await withTransaction(contextFor(req), async (tx) => {
+        // La cuota debe existir en ESTA comunidad, estar activa y ser one_time.
+        // El procedure lo revalida (es la frontera real), pero comprobarlo aquí
+        // convierte un P0002/22023 genérico en un mensaje que dice qué arreglar.
+        const fee = await chargesRepository.feeForGeneration(tx, communityId, input.feeId);
+        if (fee === null) {
+          throw new ChargeCreationError({
+            kind: "invalid",
+            message: "La cuota no está disponible para la comunidad.",
+          });
+        }
+        if (fee.periodicity !== "one_time") {
+          throw new ChargeCreationError({
+            kind: "invalid",
+            message:
+              "Solo las cuotas de pago único admiten cargos sueltos; " +
+              "una cuota recurrente se cobra por periodo.",
+          });
+        }
+
+        // Las unidades, antes de insertar nada (mismo criterio que `create`).
+        const distinct = [...new Set(input.unitIds)];
+        const units = await chargesRepository.resolveActiveUnits(tx, communityId, distinct);
+        if (units.length !== distinct.length) {
+          throw new ChargeCreationError({
+            kind: "invalid",
+            message: "Alguna unidad no existe o no está activa en la comunidad.",
+          });
+        }
+        const codeById = new Map(units.map((u) => [u.id, u.code]));
+
+        const created: Charge[] = [];
+        for (const unitId of input.unitIds) {
+          try {
+            const charge = await chargesRepository.addUnitCharge(tx, unitId, input);
+            if (charge === null) {
+              // El id existe (la sp lo devolvió) pero la relectura no lo ve:
+              // no hay lectura parcial que salvar, se aborta la transacción.
+              throw new ChargeCreationError({
+                kind: "invalid",
+                message: "No se pudo leer el cargo recién registrado.",
+              });
+            }
+            created.push(charge);
+          } catch (err) {
+            if (err instanceof ChargeCreationError) {
+              throw err;
+            }
+            const code = codeById.get(unitId) ?? unitId;
+            throw new ChargeCreationError(
+              translatePgError(err, {
+                check: `La cantidad o el monto del cargo no son válidos (unidad ${code}).`,
+                parameter: "La cuota no admite cargos sueltos: debe ser de pago único.",
+                notFound: `La cuota o la unidad ${code} no están disponibles en la comunidad.`,
+                reference: `La cuota o la unidad ${code} no están disponibles en la comunidad.`,
+              }),
+            );
           }
         }
         return created;
