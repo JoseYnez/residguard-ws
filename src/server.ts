@@ -16,6 +16,7 @@ import { feesV1Routes } from "./api/fees/v1/fees_v1.routes";
 import { feePeriodsV1Routes } from "./api/fee-periods/v1/fee_periods_v1.routes";
 import { chargesV1Routes } from "./api/charges/v1/charges_v1.routes";
 import { paymentsV1Routes } from "./api/payments/v1/payments_v1.routes";
+import { waiversV1Routes } from "./api/waivers/v1/waivers_v1.routes";
 import { expenseCategoriesV1Routes } from "./api/expense-categories/v1/expense_categories_v1.routes";
 import { expensesV1Routes } from "./api/expenses/v1/expenses_v1.routes";
 import { fundAdjustmentsV1Routes } from "./api/fund-adjustments/v1/fund_adjustments_v1.routes";
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
     await app.register(feePeriodsV1Routes);
     await app.register(chargesV1Routes);
     await app.register(paymentsV1Routes);
+    await app.register(waiversV1Routes);
     await app.register(expenseCategoriesV1Routes);
     await app.register(expensesV1Routes);
     await app.register(fundAdjustmentsV1Routes);

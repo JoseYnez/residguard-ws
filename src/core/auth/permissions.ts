@@ -65,16 +65,25 @@ export const PERMISSIONS = {
     feePeriodsUpdate: "fee_periods.update",
 
     // Cargos: lectura del estado de cuenta y registro (asignar una cuota a una
-    // unidad). La edición/condonación siguen sin endpoint.
+    // unidad). La edición sigue sin endpoint.
     //
     // Anular NO es `.update` (que además no existe para cargos): es una
     // operación sancionada distinta —baja lógica de un cargo que no debió
     // existir, solo mientras nadie le haya aplicado dinero— por eso `execute`,
     // igual que `payments.revoke`. Condonar (perdonar la deuda de un cargo que
-    // SÍ existió) será otra cosa cuando tenga endpoint.
+    // SÍ existió) es otra cosa: ver `waivers.*`.
     chargesRead: "charges.read",
     chargesCreate: "charges.create",
     chargesRevoke: "charges.revoke",
+
+    // Condonaciones. Recurso propio y no una acción de `charges` porque la
+    // condonación es un hecho contable aparte (billing.waivers), con su propio
+    // rastro y su propia reversión. Condonar y revertir son `execute` (vías
+    // sancionadas: sp_waive_charge / sp_refresh_charge_payment_status), no
+    // ediciones — mismo criterio que `payments.revoke`.
+    waiversRead: "waivers.read",
+    waiversCreate: "waivers.create",
+    waiversRevoke: "waivers.revoke",
 
     // Pagos. Anular NO es `.update`: es una operación sancionada distinta
     // (soft-delete + recálculo de estatus de cargos), por eso `execute`.

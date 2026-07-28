@@ -39,6 +39,7 @@ residguard_ws/
 │   │   ├── fee-periods/v1/          ← periodos de cuota (lista/alta/baja; la generación de cargos los crea sola)
 │   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad + cargo suelto (sin periodo) + anulación
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
+│   │   ├── waivers/v1/              ← condonaciones por cargo (sp_waive_charge) + historial + reversión
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
 │   │   └── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
@@ -89,11 +90,12 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (34 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (37 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
-     propio. `payments.revoke` y `charges.revoke` son `execute` (operaciones
-     sancionadas, no ediciones — y los cargos ni siquiera tienen `.update`).
+     propio. `payments.revoke`, `charges.revoke`, `waivers.create` y
+     `waivers.revoke` son `execute` (operaciones sancionadas, no ediciones — y
+     los cargos ni siquiera tienen `.update`).
    - `src/core/auth/permissions.ts` es el espejo tipado del seed:
      `requirePermission` solo acepta `PermissionCode`, así que un código
      inexistente es error de compilación (en `admin_ws` son strings sueltos).
@@ -145,10 +147,16 @@ responsabilidad por archivo que en `admin_ws`.
   cero SQL fuera de `withTransaction`.
 - **Vías sancionadas de billing**: registrar pago →
   `billing.sp_register_payment`; anular pago → soft-delete de aplicaciones +
-  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; cargo
-  suelto → `billing.sp_add_unit_charge`; saldo de comunidad →
-  `billing.fn_get_community_balance`. `payment_status` nunca se escribe a mano;
-  `overdue` SIEMPRE se deriva en lectura.
+  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; condonar →
+  `billing.sp_waive_charge`; revertir condonación → soft-delete del waiver +
+  `sp_refresh_charge_payment_status`; cargo suelto → `billing.sp_add_unit_charge`;
+  saldo de comunidad → `billing.fn_get_community_balance`. `payment_status`
+  nunca se escribe a mano; `overdue` SIEMPRE se deriva en lectura.
+- **Tope del monto a condonar**: la BD solo exige `waived_amount > 0`, así que
+  el límite (saldo pendiente) lo pone el servicio — y lo pone con el cargo
+  **bloqueado** (`SELECT … FOR UPDATE OF c` en la misma transacción que el
+  CALL, que vuelve a tomar el mismo lock). Sin ese lock, dos condonaciones
+  simultáneas podrían cubrir un cargo por encima de su importe.
 - **Dos formas de cargo.** El DEVENGADO cuelga de un periodo de cuota (uno por
   periodo y unidad, `uq_charges_period_unit`). El SUELTO no tiene periodo
   (`period_id`, `period_start` y `period_end` van null juntos) y es
@@ -216,12 +224,17 @@ Validada al boot con structure-verifier; si falta algo, el proceso no arranca.
   (`DELETE /communities/:communityId/charges/:id`, permiso `charges.revoke`).
   Corregir un cargo mal capturado se hace hoy anulándolo y registrándolo de
   nuevo — lo cual solo funciona mientras nadie le haya aplicado dinero.
-- **Condonaciones** (`billing.sp_waive_charge`) sin endpoint. No confundir con
-  anular: condonar perdona la deuda de un cargo que SÍ existió y conserva su
-  rastro (`payment_status = 'waived'`); anular borra lógicamente un cargo que
-  no debió existir, y por eso el servicio lo rechaza (409) en cuanto hay pagos
-  o condonaciones de por medio. Mientras no haya endpoint de condonación, un
-  cargo incobrable se queda pendiente.
+- **Condonaciones**: ya tienen superficie propia (`waivers/v1`) — condonar
+  (`POST /communities/:communityId/charges/:chargeId/waivers`, permiso
+  `waivers.create`; sin `amount` se perdona TODO el saldo), historial
+  (`GET /communities/:communityId/waivers` con filtros `chargeId`/`unitId`/
+  fechas, `waivers.read`) y revertir (`DELETE /communities/:communityId/waivers/:id`,
+  `waivers.revoke`). No confundir con anular: condonar perdona la deuda de un
+  cargo que SÍ existió y conserva su rastro (`payment_status = 'waived'`);
+  anular borra lógicamente un cargo que no debió existir, y por eso el servicio
+  lo rechaza (409) en cuanto hay pagos o condonaciones de por medio. Lo que
+  sigue **sin** endpoint es **editar** una condonación: se revierte y se
+  registra de nuevo (una condonación no se reescribe, igual que un pago).
 - Roles **por comunidad**. Ya hay distinción admin/lector
   (`community_admin` / `community_reader`), pero el permiso se resuelve sobre
   la **tripleta** (cliente, app, usuario): es el mismo para TODAS las
