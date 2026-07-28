@@ -26,8 +26,12 @@
 // `payments.revoke` (ver sus comentarios más abajo).
 
 export const PERMISSIONS = {
-    // Comunidades: solo lectura en este servicio (el alta la hace la consola).
+    // Comunidades: CRUD desde la app. Quien crea una comunidad queda como su
+    // primer miembro (si no, nadie la vería: la visibilidad es la membresía).
+    // Sin `.delete`: la baja lógica se autoriza con `.update` (convención).
     communitiesRead: "communities.read",
+    communitiesCreate: "communities.create",
+    communitiesUpdate: "communities.update",
 
     // Membresías de comunidad: la frontera de visibilidad del servicio.
     communityMembersRead: "community_members.read",

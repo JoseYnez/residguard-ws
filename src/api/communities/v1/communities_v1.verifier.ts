@@ -5,16 +5,43 @@ import {
   pageQueryFields,
 } from "../../common/common_v1.verifier";
 
-// Contratos del recurso communities: SOLO LECTURA en esta versión. Las
-// comunidades se crean/administran desde la consola de la cuenta; aquí el
-// usuario ve únicamente aquellas donde tiene membresía activa
-// (community.community_members).
+// Contratos del recurso communities. El usuario ve y administra únicamente
+// aquellas donde tiene membresía activa (community.community_members); quien
+// crea una comunidad queda como su primer miembro.
+
+/** Estatus editables por el usuario. `deleted` es el soft delete: se alcanza
+ *  por DELETE, nunca se elige en el formulario. */
+export const COMMUNITY_STATUSES = ["active", "inactive"] as const;
 
 // --- Entrada: listar (GET /communities) -------------------------------------
 export const listCommunitiesQueryV1V = new V.ObjectNotNull(
   {
     ...pageQueryFields(),
     search: new V.String({ maxLength: 200 }),
+    // Ausente = solo activas (lo que espera el selector de alcance de las
+    // apps). `all` = activas + inactivas, para la pantalla de administración.
+    status: new V.String({ in: [...COMMUNITY_STATUSES, "all"] }),
+  },
+  { strictMode: true },
+);
+
+// --- Entrada: crear (POST /communities) -------------------------------------
+export const createCommunityV1V = new V.ObjectNotNull(
+  {
+    code: new V.StringNotNull({ minLength: 1, maxLength: 50 }),
+    name: new V.StringNotNull({ minLength: 1, maxLength: 200 }),
+    address: new V.String({ maxLength: 500 }),
+  },
+  { strictMode: true },
+);
+
+// --- Entrada: actualizar (PATCH /communities/:communityId) ------------------
+export const updateCommunityV1V = new V.ObjectNotNull(
+  {
+    code: new V.String({ minLength: 1, maxLength: 50 }),
+    name: new V.String({ minLength: 1, maxLength: 200 }),
+    address: new V.String({ maxLength: 500 }),
+    status: new V.String({ in: [...COMMUNITY_STATUSES] }),
   },
   { strictMode: true },
 );

@@ -25,6 +25,12 @@ export interface PaymentAllocation {
   readonly communityId: string;
   readonly concept: string;
   readonly amount: number;
+  /** Periodo del cargo cubierto, resuelto EN VIVO (igual que `periods` del
+   *  listado): un periodo renombrado después del pago se lee ya renombrado.
+   *  `label` null = sin alias propio; el cliente deriva uno del rango. */
+  readonly periodLabel: string | null;
+  readonly periodStart: string;
+  readonly periodEnd: string;
 }
 
 export interface PaymentDetail extends Payment {
@@ -111,6 +117,9 @@ interface AllocationRow {
   community_id: string;
   concept: string;
   amount: string;
+  period_label: string | null;
+  period_start: string;
+  period_end: string;
 }
 
 function mapAllocationRow(row: AllocationRow): PaymentAllocation {
@@ -122,6 +131,9 @@ function mapAllocationRow(row: AllocationRow): PaymentAllocation {
     communityId: row.community_id,
     concept: row.concept,
     amount: Number(row.amount),
+    periodLabel: row.period_label,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
   };
 }
 
@@ -139,10 +151,19 @@ async function fetchAllocations(
 ): Promise<PaymentAllocation[]> {
   const result = await tx.query<AllocationRow>(
     `SELECT pa.id, pa.charge_id, pa.unit_id, u.code AS unit_code,
-            c.community_id, f.concept, pa.amount::text AS amount
+            c.community_id, f.concept, pa.amount::text AS amount,
+            -- Periodo del cargo por JOIN con fee_periods (no por las columnas
+            -- copiadas en el cargo): así el detalle muestra el alias VIGENTE,
+            -- igual que la columna "Periodos" del listado. ::text porque
+            -- period_start/end son DATE y el contrato viaja como YYYY-MM-DD.
+            fp.label AS period_label,
+            fp.period_start::text AS period_start,
+            fp.period_end::text   AS period_end
        FROM billing.payment_allocations pa
        JOIN billing.charges c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
        JOIN billing.fees f    ON f.customer_id = c.customer_id  AND f.id = c.fee_id
+       JOIN billing.fee_periods fp
+         ON fp.customer_id = c.customer_id AND fp.id = c.period_id
        JOIN community.units u ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
        JOIN community.community_members cm
          ON cm.customer_id  = c.customer_id

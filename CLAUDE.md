@@ -11,9 +11,9 @@
 
 ## 0. Propósito y stack
 
-`residguard_ws` es la API de negocio de ResidGuard: comunidades, unidades,
-miembros de unidad, cargos (lectura), pagos, gastos y movimientos manuales de
-caja. **No emite tokens**: la autenticación la hace el `auth_ws` de la
+`residguard_ws` es la API de negocio de ResidGuard: comunidades (CRUD),
+unidades, miembros de unidad, cargos (lectura), pagos, gastos y movimientos
+manuales de caja. **No emite tokens**: la autenticación la hace el `auth_ws` de la
 plataforma; este servicio solo **valida** el access token (firma Ed25519
 local contra el JWKS, cacheado) y acota el alcance por comunidad.
 
@@ -31,7 +31,7 @@ residguard_ws/
 ├── src/
 │   ├── api/
 │   │   ├── common/                  ← verifiers compartidos (params, paginación, error)
-│   │   ├── communities/v1/          ← comunidades accesibles (solo lectura) + saldo
+│   │   ├── communities/v1/          ← comunidades accesibles (CRUD) + saldo
 │   │   ├── community-members/v1/    ← relación usuario↔comunidad (visibilidad)
 │   │   ├── units/v1/                ← unidades (CRUD)
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
@@ -89,7 +89,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (31 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (33 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke` es `execute` (operación sancionada, no una
@@ -99,7 +99,7 @@ responsabilidad por archivo que en `admin_ws`.
      inexistente es error de compilación (en `admin_ws` son strings sueltos).
      **Añadir un permiso obliga a tocar ese archivo Y el seed SQL.**
    - Roles `system_default` sembrados: `community_admin` (catálogo completo) y
-     `community_reader` (los 9 códigos de lectura).
+     `community_reader` (los 11 códigos de lectura).
    - Fuente de verdad operativa: `GET /auth/sessions/current/permissions` de
      `auth_ws`, cacheado por `sid` (TTL 60 s) — una sesión revocada pierde
      acceso aunque su JWT siga vigente.
@@ -117,14 +117,20 @@ responsabilidad por archivo que en `admin_ws`.
    - Rutas `/communities/:communityId/*` → preHandler `requireCommunityAccess()`.
    - Rutas `/units/:unitId/*` → preHandler `requireUnitAccess()` (unidad →
      comunidad → membresía en una consulta).
-   - `GET /communities` y `GET /communities/:communityId` no llevan preHandler
-     de alcance: lo aplica el `ACCESS_JOIN` del repositorio.
+   - El recurso **communities** (GET lista/detalle, POST, PATCH, DELETE) no
+     lleva preHandler de alcance: lo aplica el `ACCESS_JOIN` del repositorio.
+     Y a propósito, porque `requireCommunityAccess()` exige la comunidad
+     **activa**: con él, desactivar una comunidad sería un viaje sin retorno
+     (nadie podría editarla ni reactivarla). El JOIN del repositorio admite
+     `inactive` y solo excluye `deleted`. `/balance` sí lo conserva.
    - `payments` (no cuelga de comunidad) → el controller valida contra los
      cargos tocados: registrar/anular exige alcanzar **todas** sus
      comunidades; consultar basta con **alguna**.
 6. Recurso fuera del alcance → **404**, indistinguible de inexistente.
-   El **primer** miembro de una comunidad se siembra desde la consola de la
-   cuenta o el proceso de sincronización (sin membresía inicial nadie la ve).
+   El **primer** miembro de una comunidad lo crea `POST /communities` en la
+   misma transacción (el actor queda como miembro de lo que acaba de crear);
+   para las comunidades que llegan por el seed o el proceso de sincronización,
+   la membresía inicial viene de ahí. Sin membresía nadie la ve.
 
 ---
 

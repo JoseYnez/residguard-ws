@@ -62,6 +62,12 @@ export const paymentAllocationV1V = new V.ObjectNotNull({
   communityId: new V.StringNotNull(),
   concept: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
+  /** Periodo del cargo cubierto (mismos campos que `periods` del listado): el
+   *  detalle dice a QUÉ periodo se aplicó cada parte del depósito. `label`
+   *  null = sin alias propio; el cliente deriva uno del rango. */
+  periodLabel: new V.String(),
+  periodStart: new V.StringNotNull(),
+  periodEnd: new V.StringNotNull(),
 });
 
 // --- Salida: un pago (encabezado) ----------------------------------------------------
