@@ -37,7 +37,7 @@ residguard_ws/
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
 │   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
 │   │   ├── fee-periods/v1/          ← periodos de cuota (lista/alta/baja; la generación de cargos los crea sola)
-│   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad
+│   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad + anulación
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
@@ -89,11 +89,11 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (33 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (34 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
-     propio. `payments.revoke` es `execute` (operación sancionada, no una
-     edición).
+     propio. `payments.revoke` y `charges.revoke` son `execute` (operaciones
+     sancionadas, no ediciones — y los cargos ni siquiera tienen `.update`).
    - `src/core/auth/permissions.ts` es el espejo tipado del seed:
      `requirePermission` solo acepta `PermissionCode`, así que un código
      inexistente es error de compilación (en `admin_ws` son strings sueltos).
@@ -201,15 +201,19 @@ Validada al boot con structure-verifier; si falta algo, el proceso no arranca.
 
 ## 7. Pendientes conocidos (fuera de esta versión)
 
-- Cargos: lectura por comunidad (`GET /communities/:communityId/charges`, con
-  filtro `unitId` opcional) o por unidad (`GET /units/:unitId/charges`, la
-  fuente del flujo de pagos), y registro multi-unidad
-  (`POST /communities/:communityId/charges` con `unitIds[]`, permiso
-  `charges.create`: un cargo por unidad en una transacción todo-o-nada; la
-  cuota debe ser activa y de la comunidad, y el solapamiento responde 409 vía
-  `ex_charges_no_overlap` nombrando la unidad). Edición/baja de cargos siguen
-  pendientes.
-- Condonaciones (`billing.sp_waive_charge`) sin endpoint.
+- **Edición** de cargos (monto, periodo, vencimiento): sin endpoint. Lo que ya
+  existe es leer (`GET /communities/:communityId/charges` con filtro `unitId`
+  opcional, `GET /units/:unitId/charges`), registrar
+  (`POST /communities/:communityId/charges` con `unitIds[]`) y **anular**
+  (`DELETE /communities/:communityId/charges/:id`, permiso `charges.revoke`).
+  Corregir un cargo mal capturado se hace hoy anulándolo y registrándolo de
+  nuevo — lo cual solo funciona mientras nadie le haya aplicado dinero.
+- **Condonaciones** (`billing.sp_waive_charge`) sin endpoint. No confundir con
+  anular: condonar perdona la deuda de un cargo que SÍ existió y conserva su
+  rastro (`payment_status = 'waived'`); anular borra lógicamente un cargo que
+  no debió existir, y por eso el servicio lo rechaza (409) en cuanto hay pagos
+  o condonaciones de por medio. Mientras no haya endpoint de condonación, un
+  cargo incobrable se queda pendiente.
 - Roles **por comunidad**. Ya hay distinción admin/lector
   (`community_admin` / `community_reader`), pero el permiso se resuelve sobre
   la **tripleta** (cliente, app, usuario): es el mismo para TODAS las

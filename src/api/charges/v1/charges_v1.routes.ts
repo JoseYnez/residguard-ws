@@ -6,7 +6,11 @@ import {
 } from "../../../core/auth/community_access";
 import { PERMISSIONS } from "../../../core/auth/permissions";
 import { requirePermission } from "../../../core/auth/require_permission";
-import { communityIdParamV1V, unitIdParamV1V } from "../../common/common_v1.verifier";
+import {
+  communityIdParamV1V,
+  communityScopedIdParamV1V,
+  unitIdParamV1V,
+} from "../../common/common_v1.verifier";
 import { chargesController } from "./charges_v1.controller";
 import {
   chargeListV1V,
@@ -19,9 +23,10 @@ import {
 } from "./charges_v1.verifier";
 
 // Recurso charges/v1: estado de cuenta por COMUNIDAD (todas sus unidades, con
-// filtro opcional por unidad) o por unidad (alimenta el flujo de pagos), y
+// filtro opcional por unidad) o por unidad (alimenta el flujo de pagos),
 // REGISTRO de una cuota sobre una o varias unidades de la comunidad (un cargo
-// por unidad, transacción todo-o-nada).
+// por unidad, transacción todo-o-nada) y ANULACIÓN de un cargo (baja lógica,
+// solo mientras no tenga pagos ni condonaciones).
 
 export async function chargesV1Routes(instance: FastifyInstance): Promise<void> {
   const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
@@ -114,6 +119,34 @@ export async function chargesV1Routes(instance: FastifyInstance): Promise<void> 
         return reply.code(status).send({ error: result.error.kind, message: result.error.message });
       }
       return reply.code(201).send({ items: result.value, total: result.value.length });
+    },
+  );
+
+  // Anular un cargo (baja lógica). No es una edición: se autoriza con su
+  // propio `charges.revoke` (execute), igual que anular un pago. 409 si el
+  // cargo ya tiene dinero aplicado o condonaciones — ese cargo existió y su
+  // rastro no se reescribe; primero se anula el pago.
+  app.delete(
+    "/communities/:communityId/charges/:id",
+    {
+      // Sin mapa de `response`: declararlo fija los estatus admitidos y este
+      // endpoint responde 204 sin cuerpo (misma convención que las otras bajas).
+      schema: { params: communityScopedIdParamV1V },
+      preHandler: [requirePermission(PERMISSIONS.chargesRevoke), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const result = await chargesController.revoke(
+        req,
+        req.params.communityId,
+        req.params.id,
+      );
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        return reply.code(409).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(204).send();
     },
   );
 

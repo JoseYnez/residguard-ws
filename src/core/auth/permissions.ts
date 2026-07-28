@@ -66,8 +66,15 @@ export const PERMISSIONS = {
 
     // Cargos: lectura del estado de cuenta y registro (asignar una cuota a una
     // unidad). La edición/condonación siguen sin endpoint.
+    //
+    // Anular NO es `.update` (que además no existe para cargos): es una
+    // operación sancionada distinta —baja lógica de un cargo que no debió
+    // existir, solo mientras nadie le haya aplicado dinero— por eso `execute`,
+    // igual que `payments.revoke`. Condonar (perdonar la deuda de un cargo que
+    // SÍ existió) será otra cosa cuando tenga endpoint.
     chargesRead: "charges.read",
     chargesCreate: "charges.create",
+    chargesRevoke: "charges.revoke",
 
     // Pagos. Anular NO es `.update`: es una operación sancionada distinta
     // (soft-delete + recálculo de estatus de cargos), por eso `execute`.

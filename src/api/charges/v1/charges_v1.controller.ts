@@ -41,6 +41,37 @@ export const chargesController = {
   },
 
   /**
+   * Anula (baja lógica) un cargo de la comunidad.
+   *
+   * `null` = inexistente/fuera de alcance → 404 en la route. `ok: false` con
+   * kind `conflict` = tiene pagos aplicados o condonaciones activas: el dinero
+   * manda, primero se anula el pago (o se revierte la condonación) y luego el
+   * cargo. La comprobación vive DENTRO del UPDATE (ver el repository).
+   */
+  async revoke(
+    req: FastifyRequest,
+    communityId: string,
+    id: string,
+  ): Promise<MutationResult<void> | null> {
+    return withTransaction(contextFor(req), async (tx) => {
+      if (await chargesRepository.softDelete(tx, communityId, id)) {
+        return { ok: true, value: undefined };
+      }
+      if (await chargesRepository.revocationBlocked(tx, communityId, id)) {
+        return {
+          ok: false,
+          error: {
+            kind: "conflict",
+            message:
+              "El cargo tiene pagos aplicados o condonaciones: anúlalos antes de anular el cargo.",
+          },
+        };
+      }
+      return null;
+    });
+  },
+
+  /**
    * Genera los cargos de UNA cuota sobre TODAS sus unidades activas en el rango
    * dado (default: su vigencia). El largo/paso lo define la periodicidad de la
    * cuota; one_time genera uno solo. Idempotente: no crea duplicados. Devuelve

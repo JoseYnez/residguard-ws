@@ -319,4 +319,56 @@ export const chargesRepository = {
     const row = result.rows[0];
     return row === undefined ? null : mapRow(row);
   },
+
+  /**
+   * Baja lógica del cargo, SOLO si nadie le ha aplicado dinero.
+   *
+   * El guard va dentro del UPDATE, no en una lectura previa: `sp_register_payment`
+   * toma `FOR UPDATE` sobre el cargo antes de insertar su aplicación, así que
+   * comprobar y anular en la misma sentencia serializa las dos operaciones. Con
+   * un SELECT previo cabría que un pago se colara entre la comprobación y el
+   * UPDATE, y la aplicación quedaría colgando de un cargo eliminado.
+   *
+   * Las condonaciones bloquean igual: un cargo condonado sí existió (la deuda
+   * se perdonó), anularlo reescribiría la historia y dejaría el waiver huérfano.
+   *
+   * `false` = no existía, no es de la comunidad, ya estaba de baja, o tiene
+   * movimientos. Quién de las dos cosas lo dice {@link revocationBlocked}.
+   */
+  async softDelete(tx: TxClient, communityId: string, id: string): Promise<boolean> {
+    const result = await tx.query(
+      `UPDATE billing.charges c SET status = 'deleted'
+        WHERE c.id = $1 AND c.community_id = $2 AND c.status = 'active'
+          AND NOT EXISTS (
+                SELECT 1 FROM billing.payment_allocations pa
+                 WHERE pa.charge_id = c.id AND pa.status <> 'deleted'
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM billing.waivers w
+                 WHERE w.charge_id = c.id AND w.status <> 'deleted'
+              )`,
+      [id, communityId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
+  /**
+   * Diagnóstico tras un {@link softDelete} que no tocó filas: ¿fue porque el
+   * cargo tiene movimientos (→ 409) o porque no existe/está fuera (→ 404)?
+   * Solo se llama en ese caso, así que el camino feliz sigue siendo una
+   * sentencia.
+   */
+  async revocationBlocked(tx: TxClient, communityId: string, id: string): Promise<boolean> {
+    const result = await tx.query<{ blocked: boolean }>(
+      `SELECT ( EXISTS (SELECT 1 FROM billing.payment_allocations pa
+                         WHERE pa.charge_id = c.id AND pa.status <> 'deleted')
+             OR EXISTS (SELECT 1 FROM billing.waivers w
+                         WHERE w.charge_id = c.id AND w.status <> 'deleted')
+              ) AS blocked
+         FROM billing.charges c
+        WHERE c.id = $1 AND c.community_id = $2 AND c.status = 'active'`,
+      [id, communityId],
+    );
+    return result.rows[0]?.blocked ?? false;
+  },
 };
