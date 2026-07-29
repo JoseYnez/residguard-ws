@@ -10,6 +10,7 @@ import { closePool } from "./core/db/pool";
 import { registerErrorHandler } from "./core/http/error_handler";
 import { communitiesV1Routes } from "./api/communities/v1/communities_v1.routes";
 import { communityMembersV1Routes } from "./api/community-members/v1/community_members_v1.routes";
+import { membersV1Routes } from "./api/members/v1/members_v1.routes";
 import { unitsV1Routes } from "./api/units/v1/units_v1.routes";
 import { unitMembersV1Routes } from "./api/unit-members/v1/unit_members_v1.routes";
 import { feesV1Routes } from "./api/fees/v1/fees_v1.routes";
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
     // Rutas por recurso.
     await app.register(communitiesV1Routes);
     await app.register(communityMembersV1Routes);
+    await app.register(membersV1Routes);
     await app.register(unitsV1Routes);
     await app.register(unitMembersV1Routes);
     await app.register(feesV1Routes);

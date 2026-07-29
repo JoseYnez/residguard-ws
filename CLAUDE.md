@@ -32,7 +32,8 @@ residguard_ws/
 │   ├── api/
 │   │   ├── common/                  ← verifiers compartidos (params, paginación, error)
 │   │   ├── communities/v1/          ← comunidades accesibles (CRUD) + saldo
-│   │   ├── community-members/v1/    ← relación usuario↔comunidad (visibilidad)
+│   │   ├── community-members/v1/    ← relación usuario↔comunidad (visibilidad), bajo /access
+│   │   ├── members/v1/              ← padrón de personas de la comunidad (CRUD), user_id siempre NULL
 │   │   ├── units/v1/                ← unidades (CRUD)
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
 │   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
@@ -90,7 +91,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (37 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (40 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke`, `charges.revoke`, `waivers.create` y

@@ -20,13 +20,21 @@ import {
 // por cualquier miembro activo de la comunidad (v1 sin roles). El PRIMER
 // miembro de una comunidad se siembra desde la consola de la cuenta o el
 // proceso de sincronización — sin membresía inicial nadie la alcanza.
+//
+// RUTA `/access`, NO `/members`. Esto NO es el directorio de personas de la
+// comunidad (ese es members/v1): aquí una fila es un USUARIO REGISTRADO con
+// acceso, y por eso user_id es NOT NULL. Son dos conceptos que se parecen en
+// el nombre y no en las consecuencias — dar de alta a una persona en el
+// directorio no debe poder conceder visibilidad por accidente. Los códigos de
+// permiso conservan el prefijo `community_members.*` (el catálogo se siembra
+// en admin_project y renombrarlos costaría más de lo que aclara).
 
 export async function communityMembersV1Routes(instance: FastifyInstance): Promise<void> {
   const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
 
-  // Listar miembros de la comunidad (paginado)
+  // Listar quién tiene acceso a la comunidad (paginado)
   app.get(
-    "/communities/:communityId/members",
+    "/communities/:communityId/access",
     {
       schema: {
         params: communityIdParamV1V,
@@ -49,7 +57,7 @@ export async function communityMembersV1Routes(instance: FastifyInstance): Promi
 
   // Otorgar acceso a un usuario
   app.post(
-    "/communities/:communityId/members",
+    "/communities/:communityId/access",
     {
       schema: {
         params: communityIdParamV1V,
@@ -79,7 +87,7 @@ export async function communityMembersV1Routes(instance: FastifyInstance): Promi
 
   // Revocar acceso (baja lógica)
   app.delete(
-    "/communities/:communityId/members/:id",
+    "/communities/:communityId/access/:id",
     {
       // Revocar acceso es baja lógica → se autoriza con `.update`.
       schema: { params: communityScopedIdParamV1V },

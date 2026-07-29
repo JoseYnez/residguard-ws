@@ -33,10 +33,20 @@ export const PERMISSIONS = {
     communitiesCreate: "communities.create",
     communitiesUpdate: "communities.update",
 
-    // Membresías de comunidad: la frontera de visibilidad del servicio.
+    // Membresías de comunidad: la frontera de visibilidad del servicio. Quién
+    // VE la comunidad (usuarios registrados) — ruta /communities/:id/access.
     communityMembersRead: "community_members.read",
     communityMembersCreate: "community_members.create",
     communityMembersUpdate: "community_members.update",
+
+    // Directorio de personas de la comunidad (el padrón): quién vive, posee o
+    // arrienda, tenga o no cuenta en la plataforma — ruta
+    // /communities/:id/members. Separado de `community_members.*` a propósito:
+    // llevar el padrón y repartir accesos son atribuciones distintas, y una
+    // fila del padrón no concede visibilidad de nada.
+    membersRead: "members.read",
+    membersCreate: "members.create",
+    membersUpdate: "members.update",
 
     // Unidades. Excepción a la convención "sin .delete": la baja (lógica) de
     // unidades se autoriza con permiso propio, separado de la edición.
