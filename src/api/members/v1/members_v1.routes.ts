@@ -26,11 +26,13 @@ import {
 // community.community_members, permisos `community_members.*`). Dar de alta a
 // alguien aquí no le concede visibilidad de nada; por eso son dos recursos con
 // dos permisos, y no una sola pantalla que hiciera ambas cosas sin que se note.
+//
+// Tampoco lleva el ROL de la persona: owner/tenant/resident califica a la
+// relación con una unidad concreta, y esa vive en unit-members/v1.
 
 /** Cuerpo del PATCH → UpdateMemberInput (ausente = "no tocar"; null en
  *  anulables = "limpiar"). */
 function toUpdateInput(body: {
-  memberType?: string | null;
   fullName?: string | null;
   phone?: string | null;
   email?: string | null;
@@ -38,7 +40,6 @@ function toUpdateInput(body: {
   status?: string | null;
 }): UpdateMemberInput {
   return {
-    ...(body.memberType !== null && body.memberType !== undefined && { memberType: body.memberType }),
     ...(body.fullName !== null && body.fullName !== undefined && { fullName: body.fullName }),
     ...(body.status !== null && body.status !== undefined && { status: body.status }),
     // Anulables: se incluyen aunque sean null (null = limpiar).
@@ -69,7 +70,6 @@ export async function membersV1Routes(instance: FastifyInstance): Promise<void> 
         page: q.page,
         pageSize: q.pageSize,
         search: q.search ?? null,
-        memberType: q.memberType ?? null,
       });
       return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
     },
@@ -113,7 +113,6 @@ export async function membersV1Routes(instance: FastifyInstance): Promise<void> 
     async (req, reply) => {
       const b = req.body;
       const result = await membersController.create(req, req.params.communityId, {
-        memberType: b.memberType,
         fullName: b.fullName,
         phone: b.phone ?? null,
         email: b.email ?? null,

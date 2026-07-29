@@ -10,12 +10,16 @@ import type { TxClient } from "../../../core/db/with_transaction";
 // core.users esté poblado (sincronización de identidad, aún inexistente), y
 // además es una decisión distinta de registrar a la persona — cuando llegue,
 // será su propio endpoint.
+//
+// Tampoco hay `memberType`: el rol (owner/tenant/resident) califica a la
+// RELACIÓN persona↔unidad —alguien es propietario de una unidad y arrendatario
+// de otra—, así que vive en unit-members/v1. Este recurso responde QUIÉN es la
+// persona; el rol se lee por unidad.
 
 export interface Member {
   readonly id: string;
   readonly communityId: string;
   readonly userId: string | null;
-  readonly memberType: string;
   readonly fullName: string;
   readonly phone: string | null;
   readonly email: string | null;
@@ -26,7 +30,6 @@ export interface Member {
 }
 
 export interface CreateMemberInput {
-  readonly memberType: string;
   readonly fullName: string;
   readonly phone?: string | null;
   readonly email?: string | null;
@@ -34,7 +37,6 @@ export interface CreateMemberInput {
 }
 
 export interface UpdateMemberInput {
-  readonly memberType?: string;
   readonly fullName?: string;
   readonly phone?: string | null;
   readonly email?: string | null;
@@ -47,11 +49,10 @@ export interface ListMembersInput {
   readonly page: number;
   readonly pageSize: number;
   readonly search?: string | null;
-  readonly memberType?: string | null;
 }
 
 const SELECT_COLUMNS = `
-  id, community_id, user_id, member_type, full_name, phone, email::text AS email,
+  id, community_id, user_id, full_name, phone, email::text AS email,
   notes, status, created_at, updated_at
 `;
 
@@ -59,7 +60,6 @@ interface MemberRow {
   id: string;
   community_id: string;
   user_id: string | null;
-  member_type: string;
   full_name: string;
   phone: string | null;
   email: string | null;
@@ -74,7 +74,6 @@ function mapRow(row: MemberRow): Member {
     id: row.id,
     communityId: row.community_id,
     userId: row.user_id,
-    memberType: row.member_type,
     fullName: row.full_name,
     phone: row.phone,
     email: row.email,
@@ -89,7 +88,6 @@ export const membersRepository = {
   /** Personas del padrón de la comunidad (paginado). Oculta las 'deleted'. */
   async list(tx: TxClient, input: ListMembersInput): Promise<{ items: Member[]; total: number }> {
     const search = input.search ?? null;
-    const memberType = input.memberType ?? null;
     const offset = (input.page - 1) * input.pageSize;
 
     const where = `
@@ -97,20 +95,19 @@ export const membersRepository = {
         AND status != 'deleted'
         AND ($2::text IS NULL OR full_name ILIKE '%' || $2 || '%' OR email ILIKE '%' || $2 || '%'
                               OR phone     ILIKE '%' || $2 || '%')
-        AND ($3::community.member_type IS NULL OR member_type = $3::community.member_type)
     `;
 
     const totalResult = await tx.query<{ count: string }>(
       `SELECT count(*)::bigint AS count FROM community.members ${where}`,
-      [input.communityId, search, memberType],
+      [input.communityId, search],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<MemberRow>(
       `SELECT ${SELECT_COLUMNS} FROM community.members ${where}
         ORDER BY full_name
-        LIMIT $4 OFFSET $5`,
-      [input.communityId, search, memberType, input.pageSize, offset],
+        LIMIT $3 OFFSET $4`,
+      [input.communityId, search, input.pageSize, offset],
     );
 
     return { items: itemsResult.rows.map(mapRow), total };
@@ -140,13 +137,12 @@ export const membersRepository = {
   ): Promise<Member> {
     const result = await tx.query<MemberRow>(
       `INSERT INTO community.members
-         (customer_id, community_id, member_type, full_name, phone, email, notes)
-       VALUES ($1, $2, $3::community.member_type, $4, $5, $6, $7)
+         (customer_id, community_id, full_name, phone, email, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING ${SELECT_COLUMNS}`,
       [
         customerId,
         communityId,
-        input.memberType,
         input.fullName,
         input.phone ?? null,
         input.email ?? null,
@@ -173,7 +169,6 @@ export const membersRepository = {
       i += 1;
     };
 
-    if (input.memberType !== undefined) push("member_type", input.memberType, "::community.member_type");
     if (input.fullName !== undefined) push("full_name", input.fullName);
     if (input.phone !== undefined) push("phone", input.phone);
     if (input.email !== undefined) push("email", input.email);

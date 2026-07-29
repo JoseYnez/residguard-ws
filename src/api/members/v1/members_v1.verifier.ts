@@ -2,19 +2,21 @@ import { Verifiers as V } from "structure-verifier";
 import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifier";
 
 // Contratos del recurso members (community.members): el padrón de personas de
-// una comunidad. A diferencia de unit-members, aquí `userId` NO forma parte de
-// ninguna entrada — se registra a la persona, no al usuario. Sale en la
-// respuesta (siempre null hoy) para no romper el contrato el día que se pueda
-// vincular.
+// una comunidad.
+//
+// Dos campos que sí tiene unit-members y aquí NO existen, a propósito:
+//   * `userId` — se registra a la persona, no al usuario. Sale en la respuesta
+//     (siempre null hoy) para no romper el contrato el día que se pueda
+//     vincular, pero no entra por ninguna vía.
+//   * `memberType` — el rol califica a la RELACIÓN persona↔unidad (alguien es
+//     propietario de una unidad y arrendatario de otra), así que se pide y se
+//     devuelve en unit-members/v1, nunca aquí.
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-export const MEMBER_TYPES = ["owner", "tenant", "resident"] as const;
 
 // --- Entrada: crear (POST /communities/:communityId/members) -----------------
 export const createMemberV1V = new V.ObjectNotNull(
   {
-    memberType: new V.StringNotNull({ in: [...MEMBER_TYPES] }),
     fullName: new V.StringNotNull({ minLength: 1, maxLength: 200 }),
     phone: new V.String({ maxLength: 50 }),
     email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
@@ -26,7 +28,6 @@ export const createMemberV1V = new V.ObjectNotNull(
 // --- Entrada: actualizar (PATCH /communities/:communityId/members/:id) -------
 export const updateMemberV1V = new V.ObjectNotNull(
   {
-    memberType: new V.String({ in: [...MEMBER_TYPES] }),
     fullName: new V.String({ minLength: 1, maxLength: 200 }),
     phone: new V.String({ maxLength: 50 }),
     email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
@@ -41,7 +42,6 @@ export const listMembersQueryV1V = new V.ObjectNotNull(
   {
     ...pageQueryFields(),
     search: new V.String({ maxLength: 200 }),
-    memberType: new V.String({ in: [...MEMBER_TYPES] }),
   },
   { strictMode: true },
 );
@@ -50,9 +50,8 @@ export const listMembersQueryV1V = new V.ObjectNotNull(
 export const memberV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
-  /** Usuario vinculado. Hoy SIEMPRE null (ver el repositorio). */
+  /** Usuario vinculado. Hoy SIEMPRE null (ver el encabezado). */
   userId: new V.String(),
-  memberType: new V.StringNotNull(),
   fullName: new V.StringNotNull(),
   phone: new V.String(),
   email: new V.String(),
