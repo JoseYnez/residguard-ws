@@ -12,8 +12,8 @@
 ## 0. Propósito y stack
 
 `residguard_ws` es la API de negocio de ResidGuard: comunidades (CRUD),
-unidades, miembros de unidad, cargos (lectura), pagos, gastos y movimientos
-manuales de caja. **No emite tokens**: la autenticación la hace el `auth_ws` de la
+unidades, miembros de unidad, cargos (lectura), pagos, gastos, movimientos
+manuales de caja y los reportes financieros derivados de todo ello. **No emite tokens**: la autenticación la hace el `auth_ws` de la
 plataforma; este servicio solo **valida** el access token (firma Ed25519
 local contra el JWKS, cacheado) y acota el alcance por comunidad.
 
@@ -43,7 +43,8 @@ residguard_ws/
 │   │   ├── waivers/v1/              ← condonaciones por cargo (sp_waive_charge) + historial + reversión
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
-│   │   └── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
+│   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
+│   │   └── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -91,7 +92,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (40 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (41 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke`, `charges.revoke`, `waivers.create` y
@@ -102,7 +103,8 @@ responsabilidad por archivo que en `admin_ws`.
      inexistente es error de compilación (en `admin_ws` son strings sueltos).
      **Añadir un permiso obliga a tocar ese archivo Y el seed SQL.**
    - Roles `system_default` sembrados: `community_admin` (catálogo completo) y
-     `community_reader` (los 11 códigos de lectura).
+     `community_reader` (los 14 códigos de lectura — `reports.read` incluido:
+     un lector de comunidad existe precisamente para consultar).
    - Fuente de verdad operativa: `GET /auth/sessions/current/permissions` de
      `auth_ws`, cacheado por `sid` (TTL 60 s) — una sesión revocada pierde
      acceso aunque su JWT siga vigente.
@@ -165,6 +167,20 @@ responsabilidad por archivo que en `admin_ws`.
   registrarlo dos veces son dos ventas. Consecuencia para todo SQL nuevo que
   toque cargos: el JOIN con `billing.fee_periods` es **LEFT**, siempre — con un
   INNER, las ventas desaparecen del estado de cuenta y de los pagos.
+- **Reportes: dos totales que NO cuadran entre sí, y es correcto.** `reports/v1`
+  publica el estado de **caja** (dinero que entró/salió en el rango) y la
+  **cobranza** (lo devengado de ese periodo y cuánto está cubierto). Un pago de
+  julio sobre la cuota de mayo es caja de julio y cobranza de mayo: sumarlos
+  cuenta dos veces. Las condonaciones aparecen en cobranza y **nunca** en caja —
+  no son dinero. Reglas del SQL: el ingreso se atribuye a la comunidad vía
+  `payment_allocations → charges` (el depósito no tiene `community_id`); el lado
+  caja NO filtra `charges.status` (igual que `fn_get_community_balance`, o se
+  rompe el invariante `saldo_inicial + ingresos − egresos = saldo_final`, que es
+  la prueba de que el reporte está bien) mientras que el devengado sí exige
+  `status = 'active'`; el devengo ubica el cargo por `COALESCE(period_start,
+  due_date)` — sin ese COALESCE los cargos sueltos caen fuera de todo rango. La
+  antigüedad y el adeudo por unidad son el estado **actual** de la cartera, no
+  una reconstrucción a una fecha pasada.
 - Errores esperables de PG (23505/23P01/23503/23514/P0002) se traducen a
   respuestas tipadas con `core/http/pg_errors.ts`; nunca burbujea el mensaje
   crudo.
@@ -236,11 +252,19 @@ Validada al boot con structure-verifier; si falta algo, el proceso no arranca.
   lo rechaza (409) en cuanto hay pagos o condonaciones de por medio. Lo que
   sigue **sin** endpoint es **editar** una condonación: se revierte y se
   registra de nuevo (una condonación no se reescribe, igual que un pago).
-- Roles **por comunidad**. Ya hay distinción admin/lector
+- Granularidad **por comunidad** del permiso. Ya hay distinción admin/lector
   (`community_admin` / `community_reader`), pero el permiso se resuelve sobre
   la **tripleta** (cliente, app, usuario): es el mismo para TODAS las
   comunidades del usuario. Un usuario que administre una comunidad y solo
-  consulte otra no se puede modelar hoy — exigiría una tabla de roles en
-  `community.community_members` y cruzarla con el permiso de plataforma.
+  consulte otra no se puede modelar hoy.
+  **Decisión: ResidGuard no almacena roles.** No habrá tabla ni columna de rol
+  en `community.community_members` ni en ninguna otra — la autorización se
+  gestiona íntegramente por los permisos del RBAC externo (catálogo y roles en
+  `admin_ws`, permisos efectivos vía `auth_ws`), y este servicio solo valida.
+  `community_members` responde **una** pregunta, el alcance (§2.5); el QUÉ
+  puede hacer el actor no vive aquí. Si algún día el permiso necesita variar
+  por comunidad, el cambio va en el RBAC de plataforma — acotar el grant a un
+  ámbito — nunca en un rol local que reintroduzca la frontera del permiso
+  dentro de la BD de negocio.
 - Sincronización del espejo `core.customers`/`core.users`
   (`role_identity_sync`) — servicio aparte.

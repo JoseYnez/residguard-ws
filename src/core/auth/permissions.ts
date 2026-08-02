@@ -115,6 +115,16 @@ export const PERMISSIONS = {
     fundAdjustmentsRead: "fund_adjustments.read",
     fundAdjustmentsCreate: "fund_adjustments.create",
     fundAdjustmentsUpdate: "fund_adjustments.update",
+
+    // Reportes financieros de una comunidad: estado de caja por rango, cobranza
+    // del periodo, cartera vencida y adeudo por unidad. Recurso propio y NO la
+    // suma de `charges.read` + `payments.read` + `expenses.read` +
+    // `fund_adjustments.read`: conceder el AGREGADO es una decisión distinta de
+    // conceder cada detalle (un miembro de junta puede necesitar los totales sin
+    // ver el padrón ni quién pagó qué). Exigir los cuatro dejaría además la
+    // pantalla a medias para casi todo el mundo, que es peor que negarla entera.
+    // Solo `.read`: un reporte deriva, nunca escribe.
+    reportsRead: "reports.read",
 } as const;
 
 /** Unión de todos los códigos del catálogo. El guard solo acepta estos. */

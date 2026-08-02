@@ -21,6 +21,7 @@ import { waiversV1Routes } from "./api/waivers/v1/waivers_v1.routes";
 import { expenseCategoriesV1Routes } from "./api/expense-categories/v1/expense_categories_v1.routes";
 import { expensesV1Routes } from "./api/expenses/v1/expenses_v1.routes";
 import { fundAdjustmentsV1Routes } from "./api/fund-adjustments/v1/fund_adjustments_v1.routes";
+import { reportsV1Routes } from "./api/reports/v1/reports_v1.routes";
 
 async function main(): Promise<void> {
     // En desarrollo usamos pino-pretty para que la línea de acceso salga limpia
@@ -110,6 +111,7 @@ async function main(): Promise<void> {
     await app.register(expenseCategoriesV1Routes);
     await app.register(expensesV1Routes);
     await app.register(fundAdjustmentsV1Routes);
+    await app.register(reportsV1Routes);
 
     await app.listen({ port: config.port, host: config.host });
 
