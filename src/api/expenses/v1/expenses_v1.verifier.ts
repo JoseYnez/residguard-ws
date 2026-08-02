@@ -11,7 +11,10 @@ import {
 // comunidad (egreso). Registro simple, sin flujo de aprobación ni pagos
 // parciales en esta versión.
 
-export const PAYMENT_METHODS = ["cash", "transfer", "card", "check", "other"] as const;
+// Espejo de `billing.payment_method`, el MISMO tipo que usan los pagos: un solo
+// catálogo para las dos puntas de la caja. `deposit` es el depósito bancario en
+// ventanilla/cajero (un gasto pagado depositando en la cuenta del proveedor).
+export const PAYMENT_METHODS = ["cash", "transfer", "deposit", "card", "check", "other"] as const;
 
 // --- Entrada: crear (POST /communities/:communityId/expenses) -----------------
 export const createExpenseV1V = new V.ObjectNotNull(

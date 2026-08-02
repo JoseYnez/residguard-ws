@@ -13,7 +13,11 @@ import {
 // billing.payment_allocations; el monto debe igualar la SUMA de aplicaciones
 // (lo garantizan el controller y billing.sp_register_payment).
 
-export const PAYMENT_METHODS = ["cash", "transfer", "card", "check", "other"] as const;
+// Espejo de `billing.payment_method`. `deposit` es el depósito bancario en
+// ventanilla/cajero: ni `transfer` (electrónica) ni `cash` (ese dinero no entró
+// al banco). Añadir un método exige tocar el enum de BD, este archivo, el de
+// gastos (comparten el tipo) y `METHOD_LABELS` de la SPA.
+export const PAYMENT_METHODS = ["cash", "transfer", "deposit", "card", "check", "other"] as const;
 
 // --- Entrada: registrar (POST /payments) --------------------------------------
 export const createPaymentV1V = new V.ObjectNotNull(
