@@ -12,6 +12,12 @@ import {
 // migración, conciliaciones, ingresos/salidas no ligados a cuotas. El monto
 // va CON SIGNO (+ entra dinero, − sale) y nunca es cero.
 
+// Espejo de `billing.payment_method`, el MISMO catálogo que usan pagos y
+// gastos: las tres puntas de la caja se concilian con el mismo vocabulario.
+// `other` es el movimiento que no pasó por ningún instrumento (el saldo inicial
+// de una migración, un ajuste contable).
+export const PAYMENT_METHODS = ["cash", "transfer", "deposit", "card", "check", "other"] as const;
+
 // --- Entrada: crear (POST /communities/:communityId/fund-adjustments) ---------
 export const createFundAdjustmentV1V = new V.ObjectNotNull(
   {
@@ -19,6 +25,7 @@ export const createFundAdjustmentV1V = new V.ObjectNotNull(
     amount: new V.NumberNotNull({ min: -MONEY_MAX, max: MONEY_MAX, maxDecimalPlaces: 2 }),
     reason: new V.StringNotNull({ minLength: 1, maxLength: 500 }),
     adjustedAt: new V.String({ regex: ISO_DATE_REGEX }),
+    method: new V.StringNotNull({ in: [...PAYMENT_METHODS] }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
@@ -30,6 +37,7 @@ export const updateFundAdjustmentV1V = new V.ObjectNotNull(
     amount: new V.Number({ min: -MONEY_MAX, max: MONEY_MAX, maxDecimalPlaces: 2 }),
     reason: new V.String({ minLength: 1, maxLength: 500 }),
     adjustedAt: new V.String({ regex: ISO_DATE_REGEX }),
+    method: new V.String({ in: [...PAYMENT_METHODS] }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
@@ -41,6 +49,7 @@ export const listFundAdjustmentsQueryV1V = new V.ObjectNotNull(
     ...pageQueryFields(),
     from: new V.String({ regex: ISO_DATE_REGEX }),
     to: new V.String({ regex: ISO_DATE_REGEX }),
+    method: new V.String({ in: [...PAYMENT_METHODS] }),
     search: new V.String({ maxLength: 200 }),
   },
   { strictMode: true },
@@ -53,6 +62,7 @@ export const fundAdjustmentV1V = new V.ObjectNotNull({
   amount: new V.NumberNotNull(),
   reason: new V.StringNotNull(),
   adjustedAt: new V.StringNotNull(),
+  method: new V.StringNotNull(),
   authorizedBy: new V.String(),
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),

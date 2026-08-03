@@ -28,6 +28,7 @@ function toUpdateInput(body: {
   amount?: number | null;
   reason?: string | null;
   adjustedAt?: string | null;
+  method?: string | null;
   authorizedBy?: string | null;
 }): UpdateFundAdjustmentInput {
   return {
@@ -35,6 +36,7 @@ function toUpdateInput(body: {
     ...(body.reason !== null && body.reason !== undefined && { reason: body.reason }),
     ...(body.adjustedAt !== null &&
       body.adjustedAt !== undefined && { adjustedAt: body.adjustedAt }),
+    ...(body.method !== null && body.method !== undefined && { method: body.method }),
     // Anulable: se incluye aunque sea null (null = limpiar).
     ...(body.authorizedBy !== undefined && { authorizedBy: body.authorizedBy }),
   };
@@ -62,6 +64,7 @@ export async function fundAdjustmentsV1Routes(instance: FastifyInstance): Promis
         pageSize: q.pageSize,
         from: q.from ?? null,
         to: q.to ?? null,
+        method: q.method ?? null,
         search: q.search ?? null,
       });
       return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
@@ -112,6 +115,7 @@ export async function fundAdjustmentsV1Routes(instance: FastifyInstance): Promis
         amount: b.amount,
         reason: b.reason,
         adjustedAt: b.adjustedAt ?? null,
+        method: b.method,
         authorizedBy: b.authorizedBy ?? null,
       });
       if (!result.ok) {

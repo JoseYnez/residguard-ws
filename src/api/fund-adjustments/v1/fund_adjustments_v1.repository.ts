@@ -10,6 +10,8 @@ export interface FundAdjustment {
   readonly amount: number;
   readonly reason: string;
   readonly adjustedAt: string;
+  /** Por dónde se movió el dinero (`billing.payment_method`). */
+  readonly method: string;
   readonly authorizedBy: string | null;
   readonly status: string;
   readonly createdAt: string;
@@ -20,6 +22,7 @@ export interface CreateFundAdjustmentInput {
   readonly amount: number;
   readonly reason: string;
   readonly adjustedAt?: string | null;
+  readonly method: string;
   readonly authorizedBy?: string | null;
 }
 
@@ -27,6 +30,7 @@ export interface UpdateFundAdjustmentInput {
   readonly amount?: number;
   readonly reason?: string;
   readonly adjustedAt?: string;
+  readonly method?: string;
   readonly authorizedBy?: string | null;
 }
 
@@ -36,12 +40,13 @@ export interface ListFundAdjustmentsInput {
   readonly pageSize: number;
   readonly from?: string | null;
   readonly to?: string | null;
+  readonly method?: string | null;
   readonly search?: string | null;
 }
 
 const SELECT_COLUMNS = `
   id, community_id, amount::text AS amount, reason, adjusted_at::text AS adjusted_at,
-  authorized_by, status, created_at, updated_at
+  method, authorized_by, status, created_at, updated_at
 `;
 
 interface FundAdjustmentRow {
@@ -50,6 +55,7 @@ interface FundAdjustmentRow {
   amount: string;
   reason: string;
   adjusted_at: string;
+  method: string;
   authorized_by: string | null;
   status: string;
   created_at: Date;
@@ -63,6 +69,7 @@ function mapRow(row: FundAdjustmentRow): FundAdjustment {
     amount: Number(row.amount),
     reason: row.reason,
     adjustedAt: row.adjusted_at,
+    method: row.method,
     authorizedBy: row.authorized_by,
     status: row.status,
     createdAt: row.created_at.toISOString(),
@@ -78,6 +85,7 @@ export const fundAdjustmentsRepository = {
     const from = input.from ?? null;
     const to = input.to ?? null;
     const search = input.search ?? null;
+    const method = input.method ?? null;
     const offset = (input.page - 1) * input.pageSize;
 
     const where = `
@@ -86,19 +94,20 @@ export const fundAdjustmentsRepository = {
         AND ($2::date IS NULL OR adjusted_at >= $2::date)
         AND ($3::date IS NULL OR adjusted_at <= $3::date)
         AND ($4::text IS NULL OR reason ILIKE '%' || $4 || '%')
+        AND ($5::billing.payment_method IS NULL OR method = $5::billing.payment_method)
     `;
 
     const totalResult = await tx.query<{ count: string }>(
       `SELECT count(*)::bigint AS count FROM billing.fund_adjustments ${where}`,
-      [input.communityId, from, to, search],
+      [input.communityId, from, to, search, method],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<FundAdjustmentRow>(
       `SELECT ${SELECT_COLUMNS} FROM billing.fund_adjustments ${where}
         ORDER BY adjusted_at DESC, id DESC
-        LIMIT $5 OFFSET $6`,
-      [input.communityId, from, to, search, input.pageSize, offset],
+        LIMIT $6 OFFSET $7`,
+      [input.communityId, from, to, search, method, input.pageSize, offset],
     );
 
     return { items: itemsResult.rows.map(mapRow), total };
@@ -123,8 +132,8 @@ export const fundAdjustmentsRepository = {
   ): Promise<FundAdjustment> {
     const result = await tx.query<FundAdjustmentRow>(
       `INSERT INTO billing.fund_adjustments
-         (customer_id, community_id, amount, reason, adjusted_at, authorized_by)
-       VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6)
+         (customer_id, community_id, amount, reason, adjusted_at, method, authorized_by)
+       VALUES ($1, $2, $3, $4, COALESCE($5::date, CURRENT_DATE), $6::billing.payment_method, $7)
        RETURNING ${SELECT_COLUMNS}`,
       [
         customerId,
@@ -132,6 +141,7 @@ export const fundAdjustmentsRepository = {
         input.amount,
         input.reason,
         input.adjustedAt ?? null,
+        input.method,
         input.authorizedBy ?? null,
       ],
     );
@@ -158,6 +168,7 @@ export const fundAdjustmentsRepository = {
     if (input.amount !== undefined) push("amount", input.amount);
     if (input.reason !== undefined) push("reason", input.reason);
     if (input.adjustedAt !== undefined) push("adjusted_at", input.adjustedAt, "::date");
+    if (input.method !== undefined) push("method", input.method, "::billing.payment_method");
     if (input.authorizedBy !== undefined) push("authorized_by", input.authorizedBy, "::uuid");
 
     if (sets.length === 0) {
