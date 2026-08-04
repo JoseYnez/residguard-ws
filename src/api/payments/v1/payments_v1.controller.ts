@@ -21,8 +21,11 @@ import {
 
 const PG_MESSAGES = {
   conflict: "El mismo cargo aparece más de una vez en las aplicaciones.",
-  check: "Las aplicaciones no cuadran con el monto del pago.",
-  notFound: "Alguno de los cargos no existe o no está activo.",
+  // check_violation cubre dos reglas de la sp: la suma exacta (que el
+  // controller ya validó, así que en la práctica no llega) y el cargo de otra
+  // comunidad que la caja declarada.
+  check: "Los cargos del pago no corresponden a la comunidad de la caja destino.",
+  notFound: "Alguno de los cargos —o la caja destino— no existe o no está activo.",
 } as const;
 
 /** Suma en centavos para comparar sin errores de flotante. */

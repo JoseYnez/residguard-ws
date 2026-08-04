@@ -116,6 +116,20 @@ export const PERMISSIONS = {
     fundAdjustmentsCreate: "fund_adjustments.create",
     fundAdjustmentsUpdate: "fund_adjustments.update",
 
+    // Cajas: catálogo por comunidad de los lugares donde vive el dinero
+    // ("Caja chica", "Cuenta BBVA"). NO es el método de pago: el método dice
+    // CÓMO se movió el dinero; la caja, A DÓNDE llegó. Baja lógica con `.update`.
+    cashAccountsRead: "cash_accounts.read",
+    cashAccountsCreate: "cash_accounts.create",
+    cashAccountsUpdate: "cash_accounts.update",
+
+    // Traspasos entre cajas de la MISMA comunidad. Suma cero para la comunidad
+    // (nunca tocan su saldo ni los ingresos/egresos de reportes): solo mueven
+    // saldo entre cajas. Baja lógica con `.update`, como fund_adjustments.
+    cashTransfersRead: "cash_transfers.read",
+    cashTransfersCreate: "cash_transfers.create",
+    cashTransfersUpdate: "cash_transfers.update",
+
     // Reportes financieros de una comunidad: estado de caja por rango, cobranza
     // del periodo, cartera vencida y adeudo por unidad. Recurso propio y NO la
     // suma de `charges.read` + `payments.read` + `expenses.read` +

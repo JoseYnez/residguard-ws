@@ -39,6 +39,7 @@ export async function paymentsV1Routes(instance: FastifyInstance): Promise<void>
         method: b.method,
         paidAt: b.paidAt ?? null,
         reference: b.reference ?? null,
+        cashAccountId: b.cashAccountId ?? null,
         allocations: b.allocations.map((a) => ({ chargeId: a.chargeId, amount: a.amount })),
       });
       if (!result.ok) {
@@ -66,6 +67,7 @@ export async function paymentsV1Routes(instance: FastifyInstance): Promise<void>
         page: q.page,
         pageSize: q.pageSize,
         method: q.method ?? null,
+        cashAccountId: q.cashAccountId ?? null,
         from: q.from ?? null,
         to: q.to ?? null,
       });

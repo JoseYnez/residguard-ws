@@ -54,6 +54,7 @@ export async function reportsV1Routes(instance: FastifyInstance): Promise<void> 
         communityId: req.params.communityId,
         from: q.from,
         to: q.to,
+        cashAccountId: q.cashAccountId ?? null,
       });
       if (summary === null) {
         return reply.code(404).send({ error: "not_found", message: null });

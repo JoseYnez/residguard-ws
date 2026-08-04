@@ -32,6 +32,14 @@ import type { TxClient } from "../../../core/db/with_transaction";
 //    SUELTO no tiene `period_start`, así que el devengado lo ubica
 //    `COALESCE(period_start, due_date)`. Sin ese COALESCE toda venta de tarjetas
 //    y toda multa caería fuera de cualquier rango.
+//
+// 5. Los TRASPASOS entre cajas son suma cero para la comunidad: NUNCA entran a
+//    income/outflow ni al saldo comunitario. Solo aparecen en el desglose por
+//    caja (columnas propias transfersIn/transfersOut) y en las tarjetas cuando
+//    el filtro de caja está activo. El desglose por caja se calcula SIEMPRE
+//    sobre los datos sin filtrar y de las MISMAS consultas que alimentan los
+//    totales (una sola fuente): la suma de sus filas — con el bucket "sin
+//    caja" para el histórico — reproduce los totales de la comunidad.
 
 /** Suma en centavos: dos NUMERIC(14,2) sumados como floats derivan, y estas
  *  cifras se muestran una al lado de la otra (y deben cuadrar entre sí). */
@@ -53,6 +61,9 @@ export interface ReportRangeInput {
   readonly communityId: string;
   readonly from: string;
   readonly to: string;
+  /** UUID de caja, `"none"` (solo movimientos sin caja) o null (todo). Acota
+   *  el lado CAJA del resumen; el devengado nunca se filtra. */
+  readonly cashAccountId?: string | null;
 }
 
 export interface CashFlowSide {
@@ -86,14 +97,30 @@ export interface MethodShare {
   readonly share: number;
 }
 
+/** Una fila del desglose por caja. `cashAccountId`/`name` null = el bucket
+ *  "sin caja" (movimientos que no la declararon — todo el histórico). */
+export interface CashAccountBreakdownRow {
+  readonly cashAccountId: string | null;
+  readonly name: string | null;
+  readonly openingBalance: number;
+  readonly income: number;
+  readonly outflow: number;
+  readonly transfersIn: number;
+  readonly transfersOut: number;
+  readonly closingBalance: number;
+}
+
 export interface ReportSummary {
   readonly range: { readonly from: string; readonly to: string; readonly timezone: string };
   readonly cash: {
     readonly openingBalance: number;
     readonly income: CashFlowSide;
     readonly outflow: CashFlowSide;
+    readonly transfersIn: number;
+    readonly transfersOut: number;
     readonly closingBalance: number;
   };
+  readonly cashAccounts: CashAccountBreakdownRow[];
   readonly collections: {
     readonly charged: number;
     readonly collected: number;
@@ -224,10 +251,12 @@ interface IncomeRow {
   fee_id: string;
   concept: string;
   method: string;
+  cash_account_id: string | null;
   amount: string;
 }
 
 interface AdjustmentsRow {
+  cash_account_id: string | null;
   inflow: string;
   outflow: string;
 }
@@ -235,7 +264,21 @@ interface AdjustmentsRow {
 interface ExpenseCategoryRow {
   category_id: string;
   name: string;
+  cash_account_id: string | null;
   amount: string;
+}
+
+interface CashAccountBalancesRow {
+  id: string;
+  name: string;
+  opening: string | null;
+  closing: string | null;
+}
+
+interface TransferFlowsRow {
+  cash_account_id: string;
+  transfers_in: string;
+  transfers_out: string;
 }
 
 interface CollectionsRow {
@@ -299,11 +342,31 @@ export const reportsRepository = {
       return null;
     }
 
-    // --- Ingresos por cuotas, desglosados por cuota y por método --------------
-    // Una sola consulta alimenta tres cifras (total, por cuota, por método):
-    // pedirlas por separado abre la puerta a que no sumen lo mismo.
+    // --- Cajas de la comunidad, con saldos de corte propios -------------------
+    // Todas las NO borradas (una caja inactiva sigue teniendo saldo). El saldo
+    // por caja lo deriva fn_get_cash_account_balance con los mismos cortes que
+    // el comunitario; el del bucket "sin caja" no tiene función propia — se
+    // deriva por diferencia (comunidad − cajas), lo que garantiza que el
+    // desglose sume EXACTO al total.
+    const cashAccountRows = await tx.query<CashAccountBalancesRow>(
+      `SELECT ca.id, ca.name,
+              billing.fn_get_cash_account_balance(ca.id, ($2::date - 1))::text AS opening,
+              billing.fn_get_cash_account_balance(ca.id, $3::date)::text       AS closing
+         FROM billing.cash_accounts ca
+        WHERE ca.community_id = $1
+          AND ca.status <> 'deleted'
+        ORDER BY ca.name`,
+      range,
+    );
+
+    // --- Ingresos por cuotas, desglosados por cuota, método y caja ------------
+    // Una sola consulta alimenta cuatro cifras (total, por cuota, por método y
+    // la columna de ingresos del desglose por caja): pedirlas por separado abre
+    // la puerta a que no sumen lo mismo. La caja es la del ENCABEZADO del pago
+    // (p.cash_account_id); NULL = el bucket "sin caja".
     const income = await tx.query<IncomeRow>(
-      `SELECT f.id AS fee_id, f.concept, p.method::text AS method, SUM(pa.amount)::text AS amount
+      `SELECT f.id AS fee_id, f.concept, p.method::text AS method,
+              p.cash_account_id, SUM(pa.amount)::text AS amount
          FROM billing.payment_allocations pa
          JOIN billing.payments p ON p.customer_id = pa.customer_id AND p.id = pa.payment_id
          JOIN billing.charges  c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
@@ -315,25 +378,29 @@ export const reportsRepository = {
           -- a DB_TIMEZONE. En UTC, un pago de las 19:00 caería al día siguiente.
           AND p.paid_at::date >= $2::date
           AND p.paid_at::date <= $3::date
-        GROUP BY f.id, f.concept, p.method`,
+        GROUP BY f.id, f.concept, p.method, p.cash_account_id`,
       range,
     );
 
-    // --- Movimientos manuales de caja, partidos por signo ---------------------
+    // --- Movimientos manuales de caja, partidos por signo y por caja ----------
     const adjustments = await tx.query<AdjustmentsRow>(
-      `SELECT COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::text AS inflow,
+      `SELECT cash_account_id,
+              COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::text AS inflow,
               COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)::text AS outflow
          FROM billing.fund_adjustments
         WHERE community_id = $1
           AND status <> 'deleted'
           AND adjusted_at >= $2::date
-          AND adjusted_at <= $3::date`,
+          AND adjusted_at <= $3::date
+        GROUP BY cash_account_id`,
       range,
     );
 
-    // --- Gastos ejercidos, por rubro ------------------------------------------
+    // --- Gastos ejercidos, por rubro y por caja -------------------------------
+    // El rubro se re-agrega en JS (una fila por rubro puede venir partida en
+    // varias cajas); el ORDER final lo pone la composición.
     const expenses = await tx.query<ExpenseCategoryRow>(
-      `SELECT ec.id AS category_id, ec.name, SUM(e.amount)::text AS amount
+      `SELECT ec.id AS category_id, ec.name, e.cash_account_id, SUM(e.amount)::text AS amount
          FROM billing.expenses e
          JOIN billing.expense_categories ec
            ON ec.customer_id = e.customer_id AND ec.id = e.expense_category_id
@@ -341,8 +408,29 @@ export const reportsRepository = {
           AND e.status <> 'deleted'
           AND e.expense_date >= $2::date
           AND e.expense_date <= $3::date
-        GROUP BY ec.id, ec.name
-        ORDER BY SUM(e.amount) DESC, ec.name`,
+        GROUP BY ec.id, ec.name, e.cash_account_id`,
+      range,
+    );
+
+    // --- Traspasos entre cajas del rango, por caja y sentido ------------------
+    // Suma cero para la comunidad (regla 5): solo alimentan las columnas
+    // transfersIn/transfersOut del desglose y de las tarjetas filtradas.
+    const transfers = await tx.query<TransferFlowsRow>(
+      `SELECT x.cash_account_id,
+              COALESCE(SUM(x.amount) FILTER (WHERE x.dir = 'in'), 0)::text  AS transfers_in,
+              COALESCE(SUM(x.amount) FILTER (WHERE x.dir = 'out'), 0)::text AS transfers_out
+         FROM (
+           SELECT to_cash_account_id AS cash_account_id, amount, 'in'::text AS dir
+             FROM billing.cash_account_transfers
+            WHERE community_id = $1 AND status <> 'deleted'
+              AND transferred_at >= $2::date AND transferred_at <= $3::date
+           UNION ALL
+           SELECT from_cash_account_id, amount, 'out'::text
+             FROM billing.cash_account_transfers
+            WHERE community_id = $1 AND status <> 'deleted'
+              AND transferred_at >= $2::date AND transferred_at <= $3::date
+         ) x
+        GROUP BY x.cash_account_id`,
       range,
     );
 
@@ -383,9 +471,31 @@ export const reportsRepository = {
 
     // --- Composición del payload ---------------------------------------------
 
+    // Filtro de caja del lado CAJA: null = sin filtro; "none" = solo los
+    // movimientos SIN caja (clave null); un UUID = solo esa caja.
+    const filter = input.cashAccountId ?? null;
+    const filterActive = filter !== null;
+    const filterKey: string | null = filter === "none" ? null : filter;
+
+    // Acumulador del desglose: ingresos/egresos del rango por caja. La clave
+    // "" representa el bucket "sin caja" (cash_account_id null).
+    const perAccount = new Map<string, { income: number; outflow: number }>();
+    const bump = (id: string | null, field: "income" | "outflow", amount: number): void => {
+      const key = id ?? "";
+      const acc = perAccount.get(key) ?? { income: 0, outflow: 0 };
+      acc[field] = addMoney(acc[field], amount);
+      perAccount.set(key, acc);
+    };
+
+    // Las MISMAS filas alimentan los totales (con el filtro aplicado) y el
+    // desglose (siempre completo): una sola fuente, imposible que discrepen.
+    const scopedIncome = filterActive
+      ? income.rows.filter((row) => row.cash_account_id === filterKey)
+      : income.rows;
+
     const incomeByFeeMap = new Map<string, { concept: string; amount: number }>();
     const incomeByMethodMap = new Map<string, number>();
-    for (const row of income.rows) {
+    for (const row of scopedIncome) {
       const amount = money(row.amount);
       const fee = incomeByFeeMap.get(row.fee_id);
       incomeByFeeMap.set(row.fee_id, {
@@ -397,18 +507,107 @@ export const reportsRepository = {
         addMoney(incomeByMethodMap.get(row.method) ?? 0, amount),
       );
     }
+    for (const row of income.rows) {
+      bump(row.cash_account_id, "income", money(row.amount));
+    }
     const incomeFromCharges = addMoney(
       ...[...incomeByFeeMap.values()].map((fee) => fee.amount),
     );
 
-    const adjustmentsRow = adjustments.rows[0];
-    const adjustmentsIn = money(adjustmentsRow?.inflow);
-    const adjustmentsOut = money(adjustmentsRow?.outflow);
+    const scopedAdjustments = filterActive
+      ? adjustments.rows.filter((row) => row.cash_account_id === filterKey)
+      : adjustments.rows;
+    const adjustmentsIn = addMoney(...scopedAdjustments.map((row) => money(row.inflow)));
+    const adjustmentsOut = addMoney(...scopedAdjustments.map((row) => money(row.outflow)));
+    for (const row of adjustments.rows) {
+      bump(row.cash_account_id, "income", money(row.inflow));
+      bump(row.cash_account_id, "outflow", money(row.outflow));
+    }
 
-    const expensesTotal = addMoney(...expenses.rows.map((row) => money(row.amount)));
+    const scopedExpenses = filterActive
+      ? expenses.rows.filter((row) => row.cash_account_id === filterKey)
+      : expenses.rows;
+    // Re-agregado por rubro: las filas vienen partidas por caja.
+    const expensesByCategoryMap = new Map<string, { name: string; amount: number }>();
+    for (const row of scopedExpenses) {
+      const category = expensesByCategoryMap.get(row.category_id);
+      expensesByCategoryMap.set(row.category_id, {
+        name: row.name,
+        amount:
+          category === undefined
+            ? money(row.amount)
+            : addMoney(category.amount, money(row.amount)),
+      });
+    }
+    for (const row of expenses.rows) {
+      bump(row.cash_account_id, "outflow", money(row.amount));
+    }
+    const expensesTotal = addMoney(
+      ...[...expensesByCategoryMap.values()].map((category) => category.amount),
+    );
 
     const incomeTotal = addMoney(incomeFromCharges, adjustmentsIn);
     const outflowTotal = addMoney(expensesTotal, adjustmentsOut);
+
+    // --- Desglose por caja -----------------------------------------------------
+    const transferFlows = new Map(
+      transfers.rows.map((row) => [
+        row.cash_account_id,
+        { in: money(row.transfers_in), out: money(row.transfers_out) },
+      ]),
+    );
+
+    const accountRows: CashAccountBreakdownRow[] = cashAccountRows.rows.map((row) => {
+      const flows = perAccount.get(row.id) ?? { income: 0, outflow: 0 };
+      const moved = transferFlows.get(row.id) ?? { in: 0, out: 0 };
+      return {
+        cashAccountId: row.id,
+        name: row.name,
+        openingBalance: money(row.opening),
+        income: flows.income,
+        outflow: flows.outflow,
+        transfersIn: moved.in,
+        transfersOut: moved.out,
+        closingBalance: money(row.closing),
+      };
+    });
+
+    // El bucket "sin caja" cierra por DIFERENCIA contra la comunidad: así la
+    // suma de filas reproduce el total aunque el histórico no declare caja.
+    // Sin traspasos por definición (un traspaso siempre nombra sus dos cajas).
+    const looseFlows = perAccount.get("") ?? { income: 0, outflow: 0 };
+    const looseRow: CashAccountBreakdownRow = {
+      cashAccountId: null,
+      name: null,
+      openingBalance: addMoney(
+        money(balanceRow.opening),
+        ...accountRows.map((row) => -row.openingBalance),
+      ),
+      income: looseFlows.income,
+      outflow: looseFlows.outflow,
+      transfersIn: 0,
+      transfersOut: 0,
+      closingBalance: addMoney(
+        money(balanceRow.closing),
+        ...accountRows.map((row) => -row.closingBalance),
+      ),
+    };
+    const cashAccountsBreakdown = [...accountRows, looseRow];
+
+    // --- Tarjetas del bloque cash: comunidad, o la caja del filtro -------------
+    // income/outflow ya vienen acotados por `scoped*`; los saldos y traspasos
+    // salen de la fila correspondiente del desglose. Un UUID que no sea una
+    // caja de ESTA comunidad no tiene fila → opaco, como todo fuera de alcance.
+    let cashScope: CashAccountBreakdownRow | null = null;
+    if (filterActive) {
+      cashScope =
+        filter === "none"
+          ? looseRow
+          : (accountRows.find((row) => row.cashAccountId === filter) ?? null);
+      if (cashScope === null) {
+        return null;
+      }
+    }
 
     const collectionsRow = collections.rows[0];
     const charged = money(collectionsRow?.charged);
@@ -424,7 +623,10 @@ export const reportsRepository = {
     return {
       range: { from, to, timezone },
       cash: {
-        openingBalance: money(balanceRow.opening),
+        // Con filtro activo, los saldos son los de ESA caja (o del bucket "sin
+        // caja"); income/outflow ya vienen acotados por las filas `scoped*`.
+        openingBalance:
+          cashScope === null ? money(balanceRow.opening) : cashScope.openingBalance,
         income: {
           operations: incomeFromCharges,
           adjustments: adjustmentsIn,
@@ -435,8 +637,13 @@ export const reportsRepository = {
           adjustments: adjustmentsOut,
           total: outflowTotal,
         },
-        closingBalance: money(balanceRow.closing),
+        // A nivel comunidad los traspasos se cancelan y viajan en 0 (regla 5).
+        transfersIn: cashScope === null ? 0 : cashScope.transfersIn,
+        transfersOut: cashScope === null ? 0 : cashScope.transfersOut,
+        closingBalance:
+          cashScope === null ? money(balanceRow.closing) : cashScope.closingBalance,
       },
+      cashAccounts: cashAccountsBreakdown,
       collections: {
         charged,
         collected,
@@ -449,12 +656,14 @@ export const reportsRepository = {
         total: addMoney(...buckets.map((bucket) => bucket.amount)),
         buckets,
       },
-      expensesByCategory: expenses.rows.map((row) => ({
-        categoryId: row.category_id,
-        name: row.name,
-        amount: money(row.amount),
-        share: shareOf(money(row.amount), expensesTotal),
-      })),
+      expensesByCategory: [...expensesByCategoryMap.entries()]
+        .map(([categoryId, category]) => ({
+          categoryId,
+          name: category.name,
+          amount: category.amount,
+          share: shareOf(category.amount, expensesTotal),
+        }))
+        .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name)),
       incomeByFee: [...incomeByFeeMap.entries()]
         .map(([feeId, fee]) => ({
           feeId,

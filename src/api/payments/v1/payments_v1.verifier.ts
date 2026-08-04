@@ -29,6 +29,10 @@ export const createPaymentV1V = new V.ObjectNotNull(
     // anclada, así el servidor no tiene que suponer nada. Ausente = now().
     paidAt: new V.String({ regex: ISO_DATETIME_REGEX }),
     reference: new V.String({ maxLength: 200 }),
+    // Caja a la que entró el depósito (billing.cash_accounts). OPCIONAL: el
+    // histórico no la declara y una comunidad sin catálogo sigue capturando.
+    // Con caja, la sp exige que TODOS los cargos sean de SU comunidad.
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
     allocations: new V.ArrayNotNull(
       new V.ObjectNotNull(
         {
@@ -51,11 +55,19 @@ export const listPaymentsQueryV1V = new V.ObjectNotNull(
     ...pageQueryFields(),
     communityId: new V.StringNotNull({ regex: UUID_REGEX }),
     method: new V.String({ in: [...PAYMENT_METHODS] }),
+    // Filtra por la caja destino del depósito (opcional).
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
     from: new V.String({ regex: ISO_DATE_REGEX }),
     to: new V.String({ regex: ISO_DATE_REGEX }),
   },
   { strictMode: true },
 );
+
+// --- Salida: la caja del depósito (null = pago sin caja declarada) --------------------
+const paymentCashAccountV1V = new V.Object({
+  id: new V.StringNotNull(),
+  name: new V.StringNotNull(),
+});
 
 // --- Salida: una aplicación --------------------------------------------------------
 export const paymentAllocationV1V = new V.ObjectNotNull({
@@ -82,6 +94,7 @@ export const paymentV1V = new V.ObjectNotNull({
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),
   reference: new V.String(),
+  cashAccount: paymentCashAccountV1V,
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
@@ -94,6 +107,7 @@ export const paymentDetailV1V = new V.ObjectNotNull({
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),
   reference: new V.String(),
+  cashAccount: paymentCashAccountV1V,
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
@@ -107,6 +121,7 @@ export const paymentListItemV1V = new V.ObjectNotNull({
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),
   reference: new V.String(),
+  cashAccount: paymentCashAccountV1V,
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),

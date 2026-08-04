@@ -3,7 +3,15 @@ import {
   errorResponseV1V,
   ISO_DATE_REGEX,
   pageQueryFields,
+  UUID_REGEX,
 } from "../../common/common_v1.verifier";
+
+/** Filtro de caja del resumen: un UUID de caja, o el centinela `none` para
+ *  acotar a los movimientos SIN caja declarada (el bucket que sirve para
+ *  auditar qué quedó sin asignar). Ausente = toda la comunidad. */
+const CASH_ACCOUNT_FILTER_REGEX = new RegExp(
+  `^(none|${UUID_REGEX.source.slice(1, -1)})$`,
+);
 
 // Contratos del recurso reports: agregados DERIVADOS de billing (cargos, pagos,
 // condonaciones, gastos y movimientos de caja) para una comunidad. Solo lectura;
@@ -27,6 +35,10 @@ export const reportSummaryQueryV1V = new V.ObjectNotNull(
   {
     from: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
     to: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+    /** Acota el lado CAJA (cash + desgloses de gasto/ingreso) a una caja, o a
+     *  los movimientos sin caja (`none`). El lado DEVENGADO (collections,
+     *  overdue) NO se filtra: la deuda no "pertenece" a una caja. */
+    cashAccountId: new V.String({ regex: CASH_ACCOUNT_FILTER_REGEX }),
   },
   { strictMode: true },
 );
@@ -64,7 +76,33 @@ const cashV1V = new V.ObjectNotNull({
   openingBalance: new V.NumberNotNull(),
   income: cashFlowSideV1V,
   outflow: cashFlowSideV1V,
-  /** Saldo al cierre de `to`. Invariante: opening + income − outflow = closing. */
+  /** Traspasos entre cajas del rango. Solo significan algo con el filtro de
+   *  caja activo (entra/sale de ESA caja); a nivel comunidad son suma cero y
+   *  viajan en 0 — NUNCA se suman a income/outflow. */
+  transfersIn: new V.NumberNotNull(),
+  transfersOut: new V.NumberNotNull(),
+  /** Saldo al cierre de `to`. Invariante: opening + income − outflow
+   *  + transfersIn − transfersOut = closing. */
+  closingBalance: new V.NumberNotNull(),
+});
+
+// Una fila del desglose por caja. La fila con `cashAccountId` null es el
+// bucket "sin caja": pagos/gastos/ajustes que no declararon caja (todo el
+// histórico previo a la funcionalidad). La suma de filas = totales de la
+// comunidad (los traspasos se cancelan entre filas).
+const cashAccountBreakdownV1V = new V.ObjectNotNull({
+  /** null = movimientos sin caja declarada. */
+  cashAccountId: new V.String(),
+  /** null solo en la fila "sin caja". */
+  name: new V.String(),
+  openingBalance: new V.NumberNotNull(),
+  /** Pagos + ajustes positivos del rango que entraron a ESTA caja. */
+  income: new V.NumberNotNull(),
+  /** Gastos + ajustes negativos del rango que salieron de ESTA caja. */
+  outflow: new V.NumberNotNull(),
+  transfersIn: new V.NumberNotNull(),
+  transfersOut: new V.NumberNotNull(),
+  /** opening + income − outflow + transfersIn − transfersOut. */
   closingBalance: new V.NumberNotNull(),
 });
 
@@ -124,6 +162,10 @@ export const reportSummaryV1V = new V.ObjectNotNull({
   cash: cashV1V,
   collections: collectionsV1V,
   overdue: overdueV1V,
+  /** Desglose del lado caja por caja destino (+ la fila "sin caja"). SIEMPRE
+   *  viaja completo, aunque el filtro `cashAccountId` esté activo: la tabla
+   *  del desglose no cambia con el filtro, solo las tarjetas del resumen. */
+  cashAccounts: new V.ArrayNotNull(cashAccountBreakdownV1V),
   expensesByCategory: new V.ArrayNotNull(expenseCategoryShareV1V),
   incomeByFee: new V.ArrayNotNull(feeShareV1V),
   incomeByMethod: new V.ArrayNotNull(methodShareV1V),

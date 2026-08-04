@@ -6,12 +6,19 @@ import type { TxClient } from "../../../core/db/with_transaction";
 // encabezado + sus aplicaciones + recálculo por cargo con
 // billing.sp_refresh_charge_payment_status.
 
+/** Caja a la que entró el depósito (null = sin declarar). */
+export interface PaymentCashAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface Payment {
   readonly id: string;
   readonly amount: number;
   readonly method: string;
   readonly paidAt: string;
   readonly reference: string | null;
+  readonly cashAccount: PaymentCashAccountRef | null;
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -67,6 +74,7 @@ export interface RegisterPaymentInput {
   readonly method: string;
   readonly paidAt?: string | null;
   readonly reference?: string | null;
+  readonly cashAccountId?: string | null;
   readonly allocations: ReadonlyArray<{ readonly chargeId: string; readonly amount: number }>;
 }
 
@@ -75,12 +83,22 @@ export interface ListPaymentsInput {
   readonly page: number;
   readonly pageSize: number;
   readonly method?: string | null;
+  readonly cashAccountId?: string | null;
   readonly from?: string | null;
   readonly to?: string | null;
 }
 
+// La caja del depósito viaja resuelta (id + nombre) para que el cliente no
+// tenga que cruzar catálogos. LEFT JOIN: el pago histórico no declara caja.
 const SELECT_COLUMNS = `
-  id, amount::text AS amount, method, paid_at, reference, status, created_at, updated_at
+  p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
+  ca.id AS cash_account_id, ca.name AS cash_account_name,
+  p.status, p.created_at, p.updated_at
+`;
+
+const CASH_ACCOUNT_JOIN = `
+  LEFT JOIN billing.cash_accounts ca
+    ON ca.customer_id = p.customer_id AND ca.id = p.cash_account_id
 `;
 
 interface PaymentRow {
@@ -89,6 +107,8 @@ interface PaymentRow {
   method: string;
   paid_at: Date;
   reference: string | null;
+  cash_account_id: string | null;
+  cash_account_name: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -105,6 +125,10 @@ function mapRow(row: PaymentRow): Payment {
     // el usuario es el suyo aunque el servidor esté en otro continente.
     paidAt: row.paid_at.toISOString(),
     reference: row.reference,
+    cashAccount:
+      row.cash_account_id !== null && row.cash_account_name !== null
+        ? { id: row.cash_account_id, name: row.cash_account_name }
+        : null,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -220,7 +244,7 @@ export const paymentsRepository = {
     // No se busca por timestamps: el trigger de auditoría estampa created_at
     // con clock_timestamp(), que NUNCA iguala transaction_timestamp().
     const call = await tx.query<{ p_payment_id: string | null }>(
-      `CALL billing.sp_register_payment($1, $2::billing.payment_method, $3::jsonb, COALESCE($4::timestamptz, now()), $5, NULL)`,
+      `CALL billing.sp_register_payment($1, $2::billing.payment_method, $3::jsonb, COALESCE($4::timestamptz, now()), $5, $6::uuid, NULL)`,
       [
         input.amount,
         input.method,
@@ -229,6 +253,7 @@ export const paymentsRepository = {
         ),
         input.paidAt ?? null,
         input.reference ?? null,
+        input.cashAccountId ?? null,
       ],
     );
     const paymentId = call.rows[0]?.p_payment_id ?? null;
@@ -237,7 +262,7 @@ export const paymentsRepository = {
     }
 
     const created = await tx.query<PaymentRow>(
-      `SELECT ${SELECT_COLUMNS} FROM billing.payments WHERE id = $1`,
+      `SELECT ${SELECT_COLUMNS} FROM billing.payments p ${CASH_ACCOUNT_JOIN} WHERE p.id = $1`,
       [paymentId],
     );
     const row = created.rows[0];
@@ -258,6 +283,7 @@ export const paymentsRepository = {
     input: ListPaymentsInput,
   ): Promise<{ items: PaymentListItem[]; total: number }> {
     const method = input.method ?? null;
+    const cashAccountId = input.cashAccountId ?? null;
     const from = input.from ?? null;
     const to = input.to ?? null;
     const offset = (input.page - 1) * input.pageSize;
@@ -272,21 +298,25 @@ export const paymentsRepository = {
       -- solo cubre ventas de tarjetas no aparecería en el listado.
       LEFT JOIN billing.fee_periods fp
         ON fp.customer_id = c.customer_id AND fp.id = c.period_id
+      -- LEFT: el pago histórico no declara caja.
+      LEFT JOIN billing.cash_accounts ca
+        ON ca.customer_id = p.customer_id AND ca.id = p.cash_account_id
       JOIN community.units u
         ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
      WHERE c.community_id = $1
        AND p.status != 'deleted'
        AND ($2::billing.payment_method IS NULL OR p.method = $2::billing.payment_method)
+       AND ($3::uuid IS NULL OR p.cash_account_id = $3::uuid)
        -- ::date recorta el instante en la zona de la SESIÓN, que el pool fija a
        -- config.dbTimezone. Filtrar "del 1 al 15" significa así los días de la
        -- comunidad; en UTC, un pago de las 19:00 del 15 quedaría fuera.
-       AND ($3::date IS NULL OR p.paid_at::date >= $3::date)
-       AND ($4::date IS NULL OR p.paid_at::date <= $4::date)
+       AND ($4::date IS NULL OR p.paid_at::date >= $4::date)
+       AND ($5::date IS NULL OR p.paid_at::date <= $5::date)
     `;
 
     const totalResult = await tx.query<{ count: string }>(
       `SELECT count(DISTINCT p.id)::bigint AS count ${fromWhere}`,
-      [input.communityId, method, from, to],
+      [input.communityId, method, cashAccountId, from, to],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
@@ -294,6 +324,7 @@ export const paymentsRepository = {
       PaymentRow & { allocated: string; units: PaymentUnitRef[]; periods: PaymentPeriodRef[] }
     >(
       `SELECT p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
+              ca.id AS cash_account_id, ca.name AS cash_account_name,
               p.status, p.created_at, p.updated_at,
               SUM(pa.amount)::text AS allocated,
               jsonb_agg(DISTINCT jsonb_build_object('id', u.id, 'code', u.code)) AS units,
@@ -306,11 +337,11 @@ export const paymentsRepository = {
                 'periodStart', fp.period_start, 'periodEnd', fp.period_end))
                 FILTER (WHERE fp.id IS NOT NULL), '[]'::jsonb) AS periods
          ${fromWhere}
-        GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference, p.status,
-                 p.created_at, p.updated_at
+        GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference,
+                 ca.id, ca.name, p.status, p.created_at, p.updated_at
         ORDER BY p.paid_at DESC, p.id DESC
-        LIMIT $5 OFFSET $6`,
-      [input.communityId, method, from, to, input.pageSize, offset],
+        LIMIT $6 OFFSET $7`,
+      [input.communityId, method, cashAccountId, from, to, input.pageSize, offset],
     );
 
     return {
@@ -335,6 +366,7 @@ export const paymentsRepository = {
     const result = await tx.query<PaymentRow>(
       `SELECT ${SELECT_COLUMNS}
          FROM billing.payments p
+         ${CASH_ACCOUNT_JOIN}
         WHERE p.id = $1
           AND p.status != 'deleted'
           AND EXISTS (
