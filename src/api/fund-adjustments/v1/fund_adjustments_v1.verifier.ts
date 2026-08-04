@@ -27,6 +27,9 @@ export const createFundAdjustmentV1V = new V.ObjectNotNull(
     adjustedAt: new V.String({ regex: ISO_DATE_REGEX }),
     method: new V.StringNotNull({ in: [...PAYMENT_METHODS] }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
+    // Caja por la que se movió el dinero (billing.cash_accounts). OPCIONAL: el
+    // histórico no la declara y una comunidad sin catálogo sigue capturando.
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
 );
@@ -39,6 +42,8 @@ export const updateFundAdjustmentV1V = new V.ObjectNotNull(
     adjustedAt: new V.String({ regex: ISO_DATE_REGEX }),
     method: new V.String({ in: [...PAYMENT_METHODS] }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
+    // Anulable: null explícito la limpia (movimiento sin caja declarada).
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
 );
@@ -50,10 +55,18 @@ export const listFundAdjustmentsQueryV1V = new V.ObjectNotNull(
     from: new V.String({ regex: ISO_DATE_REGEX }),
     to: new V.String({ regex: ISO_DATE_REGEX }),
     method: new V.String({ in: [...PAYMENT_METHODS] }),
+    // Filtra por la caja del movimiento (opcional).
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
     search: new V.String({ maxLength: 200 }),
   },
   { strictMode: true },
 );
+
+// --- Salida: la caja del movimiento (null = movimiento sin caja declarada) ------------
+const fundAdjustmentCashAccountV1V = new V.Object({
+  id: new V.StringNotNull(),
+  name: new V.StringNotNull(),
+});
 
 // --- Salida: un movimiento --------------------------------------------------------------
 export const fundAdjustmentV1V = new V.ObjectNotNull({
@@ -64,6 +77,7 @@ export const fundAdjustmentV1V = new V.ObjectNotNull({
   adjustedAt: new V.StringNotNull(),
   method: new V.StringNotNull(),
   authorizedBy: new V.String(),
+  cashAccount: fundAdjustmentCashAccountV1V,
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),

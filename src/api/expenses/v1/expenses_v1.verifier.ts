@@ -27,6 +27,9 @@ export const createExpenseV1V = new V.ObjectNotNull(
     vendorName: new V.String({ maxLength: 200 }),
     reference: new V.String({ maxLength: 200 }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
+    // Caja de la que salió el dinero (billing.cash_accounts). OPCIONAL: el
+    // histórico no la declara y una comunidad sin catálogo sigue capturando.
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
 );
@@ -42,6 +45,8 @@ export const updateExpenseV1V = new V.ObjectNotNull(
     vendorName: new V.String({ maxLength: 200 }),
     reference: new V.String({ maxLength: 200 }),
     authorizedBy: new V.String({ regex: UUID_REGEX }),
+    // Anulable: null explícito la limpia (gasto sin caja declarada).
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
 );
@@ -52,12 +57,20 @@ export const listExpensesQueryV1V = new V.ObjectNotNull(
     ...pageQueryFields(),
     expenseCategoryId: new V.String({ regex: UUID_REGEX }),
     method: new V.String({ in: [...PAYMENT_METHODS] }),
+    // Filtra por la caja de la que salió el gasto (opcional).
+    cashAccountId: new V.String({ regex: UUID_REGEX }),
     from: new V.String({ regex: ISO_DATE_REGEX }),
     to: new V.String({ regex: ISO_DATE_REGEX }),
     search: new V.String({ maxLength: 200 }),
   },
   { strictMode: true },
 );
+
+// --- Salida: la caja del gasto (null = gasto sin caja declarada) ---------------------
+const expenseCashAccountV1V = new V.Object({
+  id: new V.StringNotNull(),
+  name: new V.StringNotNull(),
+});
 
 // --- Salida: un gasto ----------------------------------------------------------------
 export const expenseV1V = new V.ObjectNotNull({
@@ -72,6 +85,7 @@ export const expenseV1V = new V.ObjectNotNull({
   vendorName: new V.String(),
   reference: new V.String(),
   authorizedBy: new V.String(),
+  cashAccount: expenseCashAccountV1V,
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),

@@ -13,16 +13,26 @@ import {
 
 // Orquestación del recurso fund-adjustments. El acceso a la comunidad de la
 // ruta ya lo garantizó requireCommunityAccess. El monto con signo nunca puede
-// ser cero (se valida aquí; el check de BD es el respaldo).
+// ser cero (se valida aquí; el check de BD es el respaldo). Si el movimiento
+// declara caja, debe existir, estar ACTIVA y ser de la comunidad de la ruta
+// (la FK compuesta de BD no mira el `status`).
 
 const ZERO_AMOUNT: MutationResult<never> = {
   ok: false,
   error: { kind: "invalid", message: "El monto del movimiento no puede ser cero." },
 };
 
+const INVALID_CASH_ACCOUNT: MutationResult<never> = {
+  ok: false,
+  error: {
+    kind: "invalid",
+    message: "La caja no existe, no está activa o no pertenece a esta comunidad.",
+  },
+};
+
 const PG_MESSAGES = {
   check: "El monto del movimiento no puede ser cero.",
-  reference: "La comunidad no existe o está fuera de tu alcance.",
+  reference: "La comunidad o la caja no existen o están fuera de tu alcance.",
 } as const;
 
 export const fundAdjustmentsController = {
@@ -53,10 +63,30 @@ export const fundAdjustmentsController = {
     }
     const claims = requireAuth(req);
     try {
-      const adjustment = await withTransaction(contextFor(req), (tx) =>
-        fundAdjustmentsRepository.create(tx, claims.customerId, communityId, input),
+      return await withTransaction(
+        contextFor(req),
+        async (tx): Promise<MutationResult<FundAdjustment>> => {
+          // Con caja declarada: existir, estar activa y ser de la comunidad
+          // de la ruta, dentro de la MISMA transacción que el INSERT.
+          if (input.cashAccountId !== undefined && input.cashAccountId !== null) {
+            const cashOk = await fundAdjustmentsRepository.activeCashAccountExists(
+              tx,
+              communityId,
+              input.cashAccountId,
+            );
+            if (!cashOk) {
+              return INVALID_CASH_ACCOUNT;
+            }
+          }
+          const adjustment = await fundAdjustmentsRepository.create(
+            tx,
+            claims.customerId,
+            communityId,
+            input,
+          );
+          return { ok: true, value: adjustment };
+        },
       );
-      return { ok: true, value: adjustment };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }
@@ -73,13 +103,29 @@ export const fundAdjustmentsController = {
       return ZERO_AMOUNT;
     }
     try {
-      const adjustment = await withTransaction(contextFor(req), (tx) =>
-        fundAdjustmentsRepository.update(tx, communityId, id, input),
+      return await withTransaction(
+        contextFor(req),
+        async (tx): Promise<MutationResult<FundAdjustment> | null> => {
+          // Solo se valida si el PATCH cambia la caja (null = limpiar, no se
+          // valida nada): editar otros campos de un movimiento viejo cuya caja
+          // se retiró después sigue siendo legítimo.
+          if (input.cashAccountId !== undefined && input.cashAccountId !== null) {
+            const cashOk = await fundAdjustmentsRepository.activeCashAccountExists(
+              tx,
+              communityId,
+              input.cashAccountId,
+            );
+            if (!cashOk) {
+              return INVALID_CASH_ACCOUNT;
+            }
+          }
+          const adjustment = await fundAdjustmentsRepository.update(tx, communityId, id, input);
+          if (adjustment === null) {
+            return null;
+          }
+          return { ok: true, value: adjustment };
+        },
       );
-      if (adjustment === null) {
-        return null;
-      }
-      return { ok: true, value: adjustment };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }

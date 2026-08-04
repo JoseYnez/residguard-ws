@@ -33,6 +33,7 @@ function toUpdateInput(body: {
   vendorName?: string | null;
   reference?: string | null;
   authorizedBy?: string | null;
+  cashAccountId?: string | null;
 }): UpdateExpenseInput {
   return {
     ...(body.expenseCategoryId !== null &&
@@ -46,6 +47,7 @@ function toUpdateInput(body: {
     ...(body.vendorName !== undefined && { vendorName: body.vendorName }),
     ...(body.reference !== undefined && { reference: body.reference }),
     ...(body.authorizedBy !== undefined && { authorizedBy: body.authorizedBy }),
+    ...(body.cashAccountId !== undefined && { cashAccountId: body.cashAccountId }),
   };
 }
 
@@ -71,6 +73,7 @@ export async function expensesV1Routes(instance: FastifyInstance): Promise<void>
         pageSize: q.pageSize,
         expenseCategoryId: q.expenseCategoryId ?? null,
         method: q.method ?? null,
+        cashAccountId: q.cashAccountId ?? null,
         from: q.from ?? null,
         to: q.to ?? null,
         search: q.search ?? null,
@@ -124,6 +127,7 @@ export async function expensesV1Routes(instance: FastifyInstance): Promise<void>
         vendorName: b.vendorName ?? null,
         reference: b.reference ?? null,
         authorizedBy: b.authorizedBy ?? null,
+        cashAccountId: b.cashAccountId ?? null,
       });
       if (!result.ok) {
         return reply.code(400).send({ error: result.error.kind, message: result.error.message });

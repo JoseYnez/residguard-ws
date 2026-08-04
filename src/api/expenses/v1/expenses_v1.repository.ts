@@ -5,6 +5,12 @@ import type { TxClient } from "../../../core/db/with_transaction";
 // garantiza que el rubro sea del MISMO tenant y la MISMA comunidad (23503 si
 // no). Sin DELETE físico: baja = status='deleted'.
 
+/** Caja resuelta (id + nombre) para que el cliente no cruce catálogos. */
+export interface ExpenseCashAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface Expense {
   readonly id: string;
   readonly communityId: string;
@@ -17,6 +23,7 @@ export interface Expense {
   readonly vendorName: string | null;
   readonly reference: string | null;
   readonly authorizedBy: string | null;
+  readonly cashAccount: ExpenseCashAccountRef | null;
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -31,6 +38,7 @@ export interface CreateExpenseInput {
   readonly vendorName?: string | null;
   readonly reference?: string | null;
   readonly authorizedBy?: string | null;
+  readonly cashAccountId?: string | null;
 }
 
 export interface UpdateExpenseInput {
@@ -42,6 +50,7 @@ export interface UpdateExpenseInput {
   readonly vendorName?: string | null;
   readonly reference?: string | null;
   readonly authorizedBy?: string | null;
+  readonly cashAccountId?: string | null;
 }
 
 export interface ListExpensesInput {
@@ -50,19 +59,24 @@ export interface ListExpensesInput {
   readonly pageSize: number;
   readonly expenseCategoryId?: string | null;
   readonly method?: string | null;
+  readonly cashAccountId?: string | null;
   readonly from?: string | null;
   readonly to?: string | null;
   readonly search?: string | null;
 }
 
+// LEFT JOIN a la caja: el gasto histórico no la declara.
 const SELECT = `
   SELECT e.id, e.community_id, e.expense_category_id, ec.name AS category_name,
          e.concept, e.amount::text AS amount, e.expense_date::text AS expense_date,
          e.method, e.vendor_name, e.reference, e.authorized_by,
+         ca.id AS cash_account_id, ca.name AS cash_account_name,
          e.status, e.created_at, e.updated_at
     FROM billing.expenses e
     JOIN billing.expense_categories ec
       ON ec.customer_id = e.customer_id AND ec.id = e.expense_category_id
+    LEFT JOIN billing.cash_accounts ca
+      ON ca.customer_id = e.customer_id AND ca.id = e.cash_account_id
 `;
 
 interface ExpenseRow {
@@ -77,6 +91,8 @@ interface ExpenseRow {
   vendor_name: string | null;
   reference: string | null;
   authorized_by: string | null;
+  cash_account_id: string | null;
+  cash_account_name: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -95,6 +111,10 @@ function mapRow(row: ExpenseRow): Expense {
     vendorName: row.vendor_name,
     reference: row.reference,
     authorizedBy: row.authorized_by,
+    cashAccount:
+      row.cash_account_id !== null && row.cash_account_name !== null
+        ? { id: row.cash_account_id, name: row.cash_account_name }
+        : null,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -105,6 +125,7 @@ export const expensesRepository = {
   async list(tx: TxClient, input: ListExpensesInput): Promise<{ items: Expense[]; total: number }> {
     const categoryId = input.expenseCategoryId ?? null;
     const method = input.method ?? null;
+    const cashAccountId = input.cashAccountId ?? null;
     const from = input.from ?? null;
     const to = input.to ?? null;
     const search = input.search ?? null;
@@ -115,9 +136,10 @@ export const expensesRepository = {
         AND e.status != 'deleted'
         AND ($2::uuid IS NULL OR e.expense_category_id = $2::uuid)
         AND ($3::billing.payment_method IS NULL OR e.method = $3::billing.payment_method)
-        AND ($4::date IS NULL OR e.expense_date >= $4::date)
-        AND ($5::date IS NULL OR e.expense_date <= $5::date)
-        AND ($6::text IS NULL OR e.concept ILIKE '%' || $6 || '%' OR e.vendor_name ILIKE '%' || $6 || '%')
+        AND ($4::uuid IS NULL OR e.cash_account_id = $4::uuid)
+        AND ($5::date IS NULL OR e.expense_date >= $5::date)
+        AND ($6::date IS NULL OR e.expense_date <= $6::date)
+        AND ($7::text IS NULL OR e.concept ILIKE '%' || $7 || '%' OR e.vendor_name ILIKE '%' || $7 || '%')
     `;
 
     const totalResult = await tx.query<{ count: string }>(
@@ -126,15 +148,15 @@ export const expensesRepository = {
          JOIN billing.expense_categories ec
            ON ec.customer_id = e.customer_id AND ec.id = e.expense_category_id
         ${where}`,
-      [input.communityId, categoryId, method, from, to, search],
+      [input.communityId, categoryId, method, cashAccountId, from, to, search],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<ExpenseRow>(
       `${SELECT} ${where}
         ORDER BY e.expense_date DESC, e.id DESC
-        LIMIT $7 OFFSET $8`,
-      [input.communityId, categoryId, method, from, to, search, input.pageSize, offset],
+        LIMIT $8 OFFSET $9`,
+      [input.communityId, categoryId, method, cashAccountId, from, to, search, input.pageSize, offset],
     );
 
     return { items: itemsResult.rows.map(mapRow), total };
@@ -169,7 +191,26 @@ export const expensesRepository = {
     return (result.rowCount ?? 0) > 0;
   },
 
-  /** Inserta un gasto. Puede lanzar 23503 (rubro de otra comunidad) / 23514. */
+  /**
+   * ¿Es la caja ACTIVA y de esta comunidad? La FK compuesta
+   * (customer_id, community_id, cash_account_id) ya impide usar una caja de
+   * otra comunidad, pero no mira `status`: sin esta comprobación se podrían
+   * registrar gastos contra una caja retirada del catálogo.
+   */
+  async activeCashAccountExists(
+    tx: TxClient,
+    communityId: string,
+    cashAccountId: string,
+  ): Promise<boolean> {
+    const result = await tx.query(
+      `SELECT 1 FROM billing.cash_accounts
+        WHERE id = $1 AND community_id = $2 AND status = 'active'`,
+      [cashAccountId, communityId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
+  /** Inserta un gasto. Puede lanzar 23503 (rubro/caja de otra comunidad) / 23514. */
   async create(
     tx: TxClient,
     customerId: string,
@@ -179,8 +220,8 @@ export const expensesRepository = {
     const inserted = await tx.query<{ id: string }>(
       `INSERT INTO billing.expenses
          (customer_id, community_id, expense_category_id, concept, amount,
-          expense_date, method, vendor_name, reference, authorized_by)
-       VALUES ($1, $2, $3, $4, $5, $6::date, $7::billing.payment_method, $8, $9, $10)
+          expense_date, method, vendor_name, reference, authorized_by, cash_account_id)
+       VALUES ($1, $2, $3, $4, $5, $6::date, $7::billing.payment_method, $8, $9, $10, $11)
        RETURNING id`,
       [
         customerId,
@@ -193,6 +234,7 @@ export const expensesRepository = {
         input.vendorName ?? null,
         input.reference ?? null,
         input.authorizedBy ?? null,
+        input.cashAccountId ?? null,
       ],
     );
     const created = await this.getById(tx, communityId, inserted.rows[0]!.id);
@@ -224,6 +266,7 @@ export const expensesRepository = {
     if (input.vendorName !== undefined) push("vendor_name", input.vendorName);
     if (input.reference !== undefined) push("reference", input.reference);
     if (input.authorizedBy !== undefined) push("authorized_by", input.authorizedBy, "::uuid");
+    if (input.cashAccountId !== undefined) push("cash_account_id", input.cashAccountId, "::uuid");
 
     if (sets.length === 0) {
       return this.getById(tx, communityId, id);

@@ -30,6 +30,7 @@ function toUpdateInput(body: {
   adjustedAt?: string | null;
   method?: string | null;
   authorizedBy?: string | null;
+  cashAccountId?: string | null;
 }): UpdateFundAdjustmentInput {
   return {
     ...(body.amount !== null && body.amount !== undefined && { amount: body.amount }),
@@ -37,8 +38,9 @@ function toUpdateInput(body: {
     ...(body.adjustedAt !== null &&
       body.adjustedAt !== undefined && { adjustedAt: body.adjustedAt }),
     ...(body.method !== null && body.method !== undefined && { method: body.method }),
-    // Anulable: se incluye aunque sea null (null = limpiar).
+    // Anulables: se incluyen aunque sean null (null = limpiar).
     ...(body.authorizedBy !== undefined && { authorizedBy: body.authorizedBy }),
+    ...(body.cashAccountId !== undefined && { cashAccountId: body.cashAccountId }),
   };
 }
 
@@ -65,6 +67,7 @@ export async function fundAdjustmentsV1Routes(instance: FastifyInstance): Promis
         from: q.from ?? null,
         to: q.to ?? null,
         method: q.method ?? null,
+        cashAccountId: q.cashAccountId ?? null,
         search: q.search ?? null,
       });
       return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
@@ -117,6 +120,7 @@ export async function fundAdjustmentsV1Routes(instance: FastifyInstance): Promis
         adjustedAt: b.adjustedAt ?? null,
         method: b.method,
         authorizedBy: b.authorizedBy ?? null,
+        cashAccountId: b.cashAccountId ?? null,
       });
       if (!result.ok) {
         return reply.code(400).send({ error: result.error.kind, message: result.error.message });

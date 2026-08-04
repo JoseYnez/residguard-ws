@@ -12,17 +12,20 @@ import {
 } from "./expenses_v1.repository";
 
 // Orquestación del recurso expenses. El acceso a la comunidad de la ruta ya
-// lo garantizó requireCommunityAccess; la FK compuesta de BD valida que el
-// rubro pertenezca a esa misma comunidad. Lo que la FK NO valida es el `status`
-// del rubro, así que eso se comprueba aquí antes de escribir.
+// lo garantizó requireCommunityAccess; las FKs compuestas de BD validan que el
+// rubro y la caja pertenezcan a esa misma comunidad. Lo que las FKs NO validan
+// es el `status` de rubro y caja, así que eso se comprueba aquí antes de
+// escribir.
 
 const PG_MESSAGES = {
-  reference: "El rubro de gasto no existe o no pertenece a esta comunidad.",
+  reference: "El rubro de gasto o la caja no existen o no pertenecen a esta comunidad.",
   check: "El monto del gasto debe ser mayor a cero.",
 } as const;
 
-/** Mismo texto que la violación de FK: un rubro inválido no se distingue. */
-const INACTIVE_CATEGORY = PG_MESSAGES.reference;
+const INACTIVE_CATEGORY = "El rubro de gasto no existe o no pertenece a esta comunidad.";
+
+const INVALID_CASH_ACCOUNT =
+  "La caja no existe, no está activa o no pertenece a esta comunidad.";
 
 export const expensesController = {
   async list(
@@ -45,21 +48,36 @@ export const expensesController = {
   ): Promise<MutationResult<Expense>> {
     const claims = requireAuth(req);
     try {
-      const expense = await withTransaction(contextFor(req), async (tx) => {
+      const outcome = await withTransaction(contextFor(req), async (tx) => {
         const usable = await expensesRepository.activeCategoryExists(
           tx,
           communityId,
           input.expenseCategoryId,
         );
         if (!usable) {
-          return null;
+          return "bad_category" as const;
+        }
+        // Con caja declarada: existir, estar activa y ser de la comunidad de
+        // la ruta (la FK compuesta de BD no mira el `status`).
+        if (input.cashAccountId !== undefined && input.cashAccountId !== null) {
+          const cashOk = await expensesRepository.activeCashAccountExists(
+            tx,
+            communityId,
+            input.cashAccountId,
+          );
+          if (!cashOk) {
+            return "bad_cash_account" as const;
+          }
         }
         return expensesRepository.create(tx, claims.customerId, communityId, input);
       });
-      if (expense === null) {
+      if (outcome === "bad_category") {
         return { ok: false, error: { kind: "invalid", message: INACTIVE_CATEGORY } };
       }
-      return { ok: true, value: expense };
+      if (outcome === "bad_cash_account") {
+        return { ok: false, error: { kind: "invalid", message: INVALID_CASH_ACCOUNT } };
+      }
+      return { ok: true, value: outcome };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }
@@ -86,10 +104,25 @@ export const expensesController = {
             return "bad_category" as const;
           }
         }
+        // Igual con la caja: solo si el PATCH la cambia (null = limpiar, no
+        // se valida nada).
+        if (input.cashAccountId !== undefined && input.cashAccountId !== null) {
+          const cashOk = await expensesRepository.activeCashAccountExists(
+            tx,
+            communityId,
+            input.cashAccountId,
+          );
+          if (!cashOk) {
+            return "bad_cash_account" as const;
+          }
+        }
         return expensesRepository.update(tx, communityId, id, input);
       });
       if (outcome === "bad_category") {
         return { ok: false, error: { kind: "invalid", message: INACTIVE_CATEGORY } };
+      }
+      if (outcome === "bad_cash_account") {
+        return { ok: false, error: { kind: "invalid", message: INVALID_CASH_ACCOUNT } };
       }
       if (outcome === null) {
         return null;
