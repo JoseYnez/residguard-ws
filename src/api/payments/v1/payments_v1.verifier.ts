@@ -90,6 +90,8 @@ export const paymentAllocationV1V = new V.ObjectNotNull({
 // --- Salida: un pago (encabezado) ----------------------------------------------------
 export const paymentV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
+  /** Comunidad dueña del depósito: todos sus cargos son de ella. */
+  communityId: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),
@@ -103,6 +105,7 @@ export const paymentV1V = new V.ObjectNotNull({
 // --- Salida: un pago con sus aplicaciones ---------------------------------------------
 export const paymentDetailV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
+  communityId: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),
@@ -117,6 +120,7 @@ export const paymentDetailV1V = new V.ObjectNotNull({
 // --- Salida: listado paginado (con el monto aplicado a la comunidad filtrada) ---------
 export const paymentListItemV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
+  communityId: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
   method: new V.StringNotNull(),
   paidAt: new V.StringNotNull(),

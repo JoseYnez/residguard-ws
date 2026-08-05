@@ -14,6 +14,9 @@ export interface PaymentCashAccountRef {
 
 export interface Payment {
   readonly id: string;
+  /** Comunidad dueña del depósito. Todos sus cargos son de ella (lo garantiza
+   *  billing.sp_register_payment al derivarla de los cargos). */
+  readonly communityId: string;
   readonly amount: number;
   readonly method: string;
   readonly paidAt: string;
@@ -91,7 +94,7 @@ export interface ListPaymentsInput {
 // La caja del depósito viaja resuelta (id + nombre) para que el cliente no
 // tenga que cruzar catálogos. LEFT JOIN: el pago histórico no declara caja.
 const SELECT_COLUMNS = `
-  p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
+  p.id, p.community_id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
   ca.id AS cash_account_id, ca.name AS cash_account_name,
   p.status, p.created_at, p.updated_at
 `;
@@ -103,6 +106,7 @@ const CASH_ACCOUNT_JOIN = `
 
 interface PaymentRow {
   id: string;
+  community_id: string;
   amount: string;
   method: string;
   paid_at: Date;
@@ -117,6 +121,7 @@ interface PaymentRow {
 function mapRow(row: PaymentRow): Payment {
   return {
     id: row.id,
+    communityId: row.community_id,
     amount: Number(row.amount),
     method: row.method,
     // Instante absoluto: `pg` lee el TIMESTAMPTZ como un Date de JS (que es un
@@ -275,8 +280,13 @@ export const paymentsRepository = {
   },
 
   /**
-   * Pagos con al menos una aplicación activa hacia cargos de la comunidad
-   * (paginado). `allocatedToCommunity` = parte del depósito aplicada ahí.
+   * Pagos de la comunidad (paginado). El filtro es `p.community_id` —el
+   * depósito ya declara de quién es— y no un cruce hacia los cargos: eso deja
+   * el trabajo al índice (community_id, paid_at DESC) y saca del WHERE una
+   * condición sobre una tabla que aquí solo aporta contexto de display.
+   * `allocatedToCommunity` = suma de sus aplicaciones activas; con la comunidad
+   * en el encabezado ya no puede ser una fracción del depósito, pero se
+   * conserva porque una aplicación anulada suelta sí la separaría de `amount`.
    */
   async list(
     tx: TxClient,
@@ -303,7 +313,7 @@ export const paymentsRepository = {
         ON ca.customer_id = p.customer_id AND ca.id = p.cash_account_id
       JOIN community.units u
         ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
-     WHERE c.community_id = $1
+     WHERE p.community_id = $1
        AND p.status != 'deleted'
        AND ($2::billing.payment_method IS NULL OR p.method = $2::billing.payment_method)
        AND ($3::uuid IS NULL OR p.cash_account_id = $3::uuid)
@@ -323,7 +333,7 @@ export const paymentsRepository = {
     const itemsResult = await tx.query<
       PaymentRow & { allocated: string; units: PaymentUnitRef[]; periods: PaymentPeriodRef[] }
     >(
-      `SELECT p.id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
+      `SELECT p.id, p.community_id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
               ca.id AS cash_account_id, ca.name AS cash_account_name,
               p.status, p.created_at, p.updated_at,
               SUM(pa.amount)::text AS allocated,
@@ -337,7 +347,7 @@ export const paymentsRepository = {
                 'periodStart', fp.period_start, 'periodEnd', fp.period_end))
                 FILTER (WHERE fp.id IS NOT NULL), '[]'::jsonb) AS periods
          ${fromWhere}
-        GROUP BY p.id, p.amount, p.method, p.paid_at, p.reference,
+        GROUP BY p.id, p.community_id, p.amount, p.method, p.paid_at, p.reference,
                  ca.id, ca.name, p.status, p.created_at, p.updated_at
         ORDER BY p.paid_at DESC, p.id DESC
         LIMIT $6 OFFSET $7`,
@@ -358,29 +368,27 @@ export const paymentsRepository = {
   },
 
   /**
-   * Un pago con sus aplicaciones, visible si CUALQUIERA de sus aplicaciones
-   * toca una comunidad del alcance del usuario. null = inexistente/fuera.
-   * Las aplicaciones devueltas son solo las de comunidades del actor.
+   * Un pago con sus aplicaciones, visible si el actor alcanza SU comunidad.
+   * null = inexistente o fuera de alcance.
+   *
+   * El alcance se mide contra `p.community_id` y ya no recorriendo las
+   * aplicaciones: el depósito declara de quién es. Eso además arregla un
+   * agujero del modelo viejo — un pago cuyas aplicaciones estaban todas
+   * anuladas no tocaba comunidad alguna y se volvía invisible para todos,
+   * incluido su propio dueño.
    */
   async getById(tx: TxClient, userId: string, id: string): Promise<PaymentDetail | null> {
     const result = await tx.query<PaymentRow>(
       `SELECT ${SELECT_COLUMNS}
          FROM billing.payments p
          ${CASH_ACCOUNT_JOIN}
+         JOIN community.community_members cm
+           ON cm.customer_id  = p.customer_id
+          AND cm.community_id = p.community_id
+          AND cm.user_id      = $2
+          AND cm.status       = 'active'
         WHERE p.id = $1
-          AND p.status != 'deleted'
-          AND EXISTS (
-            SELECT 1
-              FROM billing.payment_allocations pa
-              JOIN billing.charges c
-                ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
-              JOIN community.community_members cm
-                ON cm.customer_id = c.customer_id
-               AND cm.community_id = c.community_id
-               AND cm.user_id = $2
-               AND cm.status = 'active'
-             WHERE pa.payment_id = p.id AND pa.status != 'deleted'
-          )`,
+          AND p.status != 'deleted'`,
       [id, userId],
     );
     const row = result.rows[0];
@@ -390,13 +398,17 @@ export const paymentsRepository = {
     return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id, userId) };
   },
 
-  /** Comunidades (distintas) tocadas por las aplicaciones activas del pago. */
+  /**
+   * Comunidad del pago, como lista de una sola entrada: la anulación mide el
+   * alcance contra ella. Se conserva la forma de arreglo porque el controller
+   * distingue "sin comunidad alcanzable" (pago inexistente → lista vacía) de
+   * "alcanzable", y esa lógica no depende de cuántas haya.
+   */
   async getTouchedCommunities(tx: TxClient, paymentId: string): Promise<string[]> {
     const result = await tx.query<{ community_id: string }>(
-      `SELECT DISTINCT c.community_id
-         FROM billing.payment_allocations pa
-         JOIN billing.charges c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
-        WHERE pa.payment_id = $1 AND pa.status != 'deleted'`,
+      `SELECT p.community_id
+         FROM billing.payments p
+        WHERE p.id = $1 AND p.status != 'deleted'`,
       [paymentId],
     );
     return result.rows.map((r) => r.community_id);

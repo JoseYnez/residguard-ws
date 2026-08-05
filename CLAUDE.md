@@ -128,9 +128,11 @@ responsabilidad por archivo que en `admin_ws`.
      **activa**: con él, desactivar una comunidad sería un viaje sin retorno
      (nadie podría editarla ni reactivarla). El JOIN del repositorio admite
      `inactive` y solo excluye `deleted`. `/balance` sí lo conserva.
-   - `payments` (no cuelga de comunidad) → el controller valida contra los
-     cargos tocados: registrar/anular exige alcanzar **todas** sus
-     comunidades; consultar basta con **alguna**.
+   - `payments` **sí** cuelga de una comunidad (`billing.payments.community_id`,
+     derivada de sus cargos por `sp_register_payment`), pero su ruta no está
+     anidada, así que el alcance lo valida el controller: consultar y anular se
+     miden contra `p.community_id`; **registrar** se valida cargo por cargo,
+     porque la comunidad del depósito no existe hasta que la sp la deriva.
 6. Recurso fuera del alcance → **404**, indistinguible de inexistente.
    El **primer** miembro de una comunidad lo crea `POST /communities` en la
    misma transacción (el actor queda como miembro de lo que acaba de crear);
@@ -155,6 +157,11 @@ responsabilidad por archivo que en `admin_ws`.
   `sp_refresh_charge_payment_status`; cargo suelto → `billing.sp_add_unit_charge`;
   saldo de comunidad → `billing.fn_get_community_balance`. `payment_status`
   nunca se escribe a mano; `overdue` SIEMPRE se deriva en lectura.
+- **Un pago pertenece a UNA comunidad.** `sp_register_payment` la deriva de los
+  cargos aplicados y **rechaza** (400) el depósito repartido entre comunidades:
+  quien recibe dinero de dos registra dos pagos. La caja declarada debe ser de
+  esa misma comunidad — y eso ya no depende del procedimiento, lo impone la FK
+  compuesta `(customer_id, community_id, cash_account_id)`.
 - **Tope del monto a condonar**: la BD solo exige `waived_amount > 0`, así que
   el límite (saldo pendiente) lo pone el servicio — y lo pone con el cargo
   **bloqueado** (`SELECT … FOR UPDATE OF c` en la misma transacción que el
@@ -177,7 +184,10 @@ responsabilidad por archivo que en `admin_ws`.
   caja NO filtra `charges.status` (igual que `fn_get_community_balance`, o se
   rompe el invariante `saldo_inicial + ingresos − egresos = saldo_final`, que es
   la prueba de que el reporte está bien) mientras que el devengado sí exige
-  `status = 'active'`; el devengo ubica el cargo por `COALESCE(period_start,
+  `status = 'active'`. Ojo: los reportes y `fn_get_community_balance` siguen
+  atribuyendo el ingreso por el **cargo** aunque `payments.community_id` ya
+  exista y para todo pago sano dé el mismo número — cambiar la atribución en un
+  solo lado movería saldos históricos y rompería ese invariante; el devengo ubica el cargo por `COALESCE(period_start,
   due_date)` — sin ese COALESCE los cargos sueltos caen fuera de todo rango. La
   antigüedad y el adeudo por unidad son el estado **actual** de la cartera, no
   una reconstrucción a una fecha pasada.

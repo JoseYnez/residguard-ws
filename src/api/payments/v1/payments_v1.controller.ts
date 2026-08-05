@@ -14,17 +14,21 @@ import {
   type RegisterPaymentInput,
 } from "./payments_v1.repository";
 
-// Orquestación del recurso payments. Un pago no cuelga de una comunidad, así
-// que el alcance se valida contra los CARGOS que toca: para registrar, TODOS
-// los cargos deben ser de comunidades del actor; para consultar basta que
-// alguno lo sea; para anular, de nuevo TODOS.
+// Orquestación del recurso payments. El pago pertenece a UNA comunidad
+// (billing.payments.community_id, derivada de sus cargos por la vía
+// sancionada), así que el alcance se mide contra ella para consultar y anular.
+// Al REGISTRAR todavía se valida cargo por cargo: la comunidad del depósito no
+// existe hasta que la sp la deriva, y el actor debe alcanzar aquello que está
+// pagando antes de que nada se escriba.
 
 const PG_MESSAGES = {
   conflict: "El mismo cargo aparece más de una vez en las aplicaciones.",
-  // check_violation cubre dos reglas de la sp: la suma exacta (que el
-  // controller ya validó, así que en la práctica no llega) y el cargo de otra
-  // comunidad que la caja declarada.
-  check: "Los cargos del pago no corresponden a la comunidad de la caja destino.",
+  // check_violation cubre tres reglas de la sp: la suma exacta (que el
+  // controller ya validó, así que en la práctica no llega), el reparto entre
+  // comunidades y la caja de otra comunidad. El mensaje nombra las dos que sí
+  // puede provocar quien captura.
+  check:
+    "Un pago pertenece a UNA comunidad: revisa que todos los cargos —y la caja destino— sean de la misma. Si recibiste dinero de dos comunidades, regístralo como dos pagos.",
   notFound: "Alguno de los cargos —o la caja destino— no existe o no está activo.",
 } as const;
 
