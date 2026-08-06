@@ -7,6 +7,8 @@ import { communityIdParamV1V } from "../../common/common_v1.verifier";
 import { reportsController } from "./reports_v1.controller";
 import {
   errorResponseV1V,
+  movementListV1V,
+  reportMovementsQueryV1V,
   reportSummaryQueryV1V,
   reportSummaryV1V,
   reportUnitsQueryV1V,
@@ -60,6 +62,42 @@ export async function reportsV1Routes(instance: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(200).send(summary);
+    },
+  );
+
+  // Movimientos del rango: el detalle, renglón por renglón, de las cifras de
+  // caja del resumen. Mismo permiso y mismo alcance — es el mismo dinero.
+  app.get(
+    "/communities/:communityId/reports/movements",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        querystring: reportMovementsQueryV1V,
+        response: { 200: movementListV1V, 400: errorResponseV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.reportsRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      // Mismo rechazo que el resumen: una lista vacía se lee como "no hubo
+      // movimientos", que no es lo que pasó con un rango invertido.
+      if (q.from > q.to) {
+        return reply.code(400).send({
+          error: "invalid",
+          message: "La fecha inicial no puede ser posterior a la final.",
+        });
+      }
+      const { items, total, totals, timezone } = await reportsController.movements(req, {
+        communityId: req.params.communityId,
+        from: q.from,
+        to: q.to,
+        cashAccountId: q.cashAccountId ?? null,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      return reply
+        .code(200)
+        .send({ items, total, page: q.page, pageSize: q.pageSize, totals, timezone });
     },
   );
 

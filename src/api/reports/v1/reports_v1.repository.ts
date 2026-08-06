@@ -164,6 +164,87 @@ export interface ListUnitDebtInput {
   readonly onlyDebtors: boolean;
 }
 
+// --- Movimientos (el mismo dinero del resumen, renglón por renglón) -----------
+
+/** De qué tabla salió el renglón. */
+export type MovementKind = "payment" | "expense" | "adjustment" | "transfer";
+
+export interface MovementCashAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * UN movimiento de dinero. El importe viaja SIGNADO (+ entró, − salió) porque
+ * el saldo acumulado es su suma corrida: partirlo en dos columnas obligaría a
+ * cada consumidor a recomponer el signo para sumarlo.
+ */
+export interface Movement {
+  /** Id del registro de origen (pago, gasto, ajuste o traspaso). No es único
+   *  entre tipos por sí solo — la identidad de la fila es (kind, id). */
+  readonly id: string;
+  readonly kind: MovementKind;
+  /** Fecha de NEGOCIO del movimiento, recortada en la zona de operación. */
+  readonly movedOn: string;
+  /** Qué fue: las cuotas cubiertas, el concepto del gasto, el motivo. */
+  readonly concept: string;
+  /** Contexto propio del tipo: las unidades, el rubro y proveedor, las cajas
+   *  de un traspaso. null cuando el tipo no aporta ninguno. */
+  readonly detail: string | null;
+  /** billing.payment_method; null en un traspaso (no lo declara). */
+  readonly method: string | null;
+  readonly reference: string | null;
+  /** Caja por la que pasó; null = no declarada. En un traspaso, la caja del
+   *  lado que el filtro está mirando. */
+  readonly cashAccount: MovementCashAccountRef | null;
+  readonly amount: number;
+  /** Saldo del alcance DESPUÉS de este movimiento (saldo inicial + la suma
+   *  corrida hasta aquí). Ver {@link reportsRepository.movements}. */
+  readonly balance: number;
+}
+
+export interface MovementTotals {
+  /** Suma de los movimientos positivos del rango, en positivo. */
+  readonly income: number;
+  /** Suma de los negativos, en positivo. */
+  readonly outflow: number;
+  /** Saldo al día ANTERIOR a `from`, del alcance filtrado. */
+  readonly openingBalance: number;
+  /**
+   * Saldo al cierre de `to` según `fn_get_community_balance` /
+   * `fn_get_cash_account_balance` — la MISMA fuente que el resumen, y no la
+   * suma de los renglones de abajo. Que ambas cifras coincidan es lo que
+   * prueba que la lista está completa; el cliente compara y avisa si no.
+   */
+  readonly closingBalance: number;
+}
+
+export interface ListMovementsInput {
+  readonly communityId: string;
+  readonly from: string;
+  readonly to: string;
+  /** UUID de caja, `"none"` (solo lo que no declaró caja) o null (comunidad). */
+  readonly cashAccountId?: string | null;
+  readonly page: number;
+  readonly pageSize: number;
+}
+
+/** Centinela del filtro de caja: solo los movimientos SIN caja declarada. */
+export const CASH_ACCOUNT_NONE = "none";
+
+/**
+ * Condición de caja para UNA columna, compuesta en TS y no como un OR gigante
+ * en SQL: sin filtro no hay condición que el planificador tenga que descartar,
+ * y la consulta se lee igual que la regla. El nombre de columna es siempre un
+ * literal de este archivo — nunca entrada del usuario.
+ */
+function cashAccountFilterSql(column: string, filter: string | null, param: string): string {
+  if (filter === null) return "";
+  return filter === CASH_ACCOUNT_NONE
+    ? `\n       AND ${column} IS NULL`
+    : `\n       AND ${column} = ${param}::uuid`;
+}
+
 /** Tramos de antigüedad de la cartera vencida, en el orden en que se muestran.
  *  Siempre se devuelven los cuatro (con 0 los vacíos): a una tabla a la que le
  *  faltan renglones se le lee "ese tramo no existe" en vez de "ese tramo está
@@ -290,6 +371,87 @@ interface CollectionsRow {
 interface AgingRow {
   bucket: string;
   amount: string;
+}
+
+interface MovementRow {
+  id: string;
+  kind: string;
+  moved_on: string;
+  amount: string;
+  method: string | null;
+  reference: string | null;
+  concept: string | null;
+  detail: string | null;
+  cash_account_id: string | null;
+  cash_account_name: string | null;
+  /** Suma corrida SIN el saldo inicial (se le suma en TS). */
+  running: string;
+}
+
+interface MovementTotalsRow {
+  count: string;
+  income: string;
+  outflow: string;
+}
+
+interface ScopeBalancesRow {
+  opening: string | null;
+  closing: string | null;
+}
+
+/**
+ * Saldos de corte del alcance que se está listando: la comunidad entera, UNA
+ * caja, o el bucket "sin caja".
+ *
+ * Salen de las mismas funciones que el resumen (`fn_get_community_balance` /
+ * `fn_get_cash_account_balance`) y con los mismos cortes —el día ANTERIOR a
+ * `from` y el propio `to`—, así que el saldo inicial de esta lista es
+ * literalmente el mismo número que la tarjeta del otro reporte.
+ *
+ * El bucket "sin caja" no tiene función propia: se deriva por DIFERENCIA
+ * (comunidad − todas sus cajas), igual que el desglose del resumen. Eso
+ * garantiza que los tres alcances sumen exacto en vez de casi.
+ */
+async function scopeBalances(
+  tx: TxClient,
+  communityId: string,
+  from: string,
+  to: string,
+  filter: string | null,
+): Promise<{ opening: number; closing: number }> {
+  if (filter !== null && filter !== CASH_ACCOUNT_NONE) {
+    const result = await tx.query<ScopeBalancesRow>(
+      `SELECT billing.fn_get_cash_account_balance($1::uuid, ($2::date - 1))::text AS opening,
+              billing.fn_get_cash_account_balance($1::uuid, $3::date)::text       AS closing`,
+      [filter, from, to],
+    );
+    const row = result.rows[0];
+    return { opening: money(row?.opening), closing: money(row?.closing) };
+  }
+
+  const result = await tx.query<ScopeBalancesRow & { accounts_opening: string; accounts_closing: string }>(
+    `SELECT billing.fn_get_community_balance($1, ($2::date - 1))::text AS opening,
+            billing.fn_get_community_balance($1, $3::date)::text       AS closing,
+            COALESCE((SELECT SUM(billing.fn_get_cash_account_balance(ca.id, ($2::date - 1)))
+                        FROM billing.cash_accounts ca
+                       WHERE ca.community_id = $1 AND ca.status <> 'deleted'), 0)::text
+              AS accounts_opening,
+            COALESCE((SELECT SUM(billing.fn_get_cash_account_balance(ca.id, $3::date))
+                        FROM billing.cash_accounts ca
+                       WHERE ca.community_id = $1 AND ca.status <> 'deleted'), 0)::text
+              AS accounts_closing`,
+    [communityId, from, to],
+  );
+  const row = result.rows[0];
+  const opening = money(row?.opening);
+  const closing = money(row?.closing);
+  if (filter === null) {
+    return { opening, closing };
+  }
+  return {
+    opening: addMoney(opening, -money(row?.accounts_opening)),
+    closing: addMoney(closing, -money(row?.accounts_closing)),
+  };
 }
 
 interface UnitDebtRow {
@@ -745,6 +907,185 @@ export const reportsRepository = {
         waived: money(totalsRow?.waived),
         balance: money(totalsRow?.balance),
         overdue: money(totalsRow?.overdue),
+      },
+    };
+  },
+
+  /**
+   * Los movimientos de dinero del rango, uno por renglón y en orden
+   * cronológico: el mismo dinero que el resumen agrega, detallado.
+   *
+   * PAGOS, GASTOS y MOVIMIENTOS DE CAJA salen de las mismas tablas, con las
+   * mismas reglas de atribución y el mismo recorte a día que `summary` — es lo
+   * que hace que los totales de esta lista cuadren con el estado de caja. En
+   * particular el ingreso se atribuye por `payment_allocations → charges`
+   * (regla 1) y el lado caja NO filtra `charges.status` (regla 2).
+   *
+   * UN RENGLÓN POR DEPÓSITO, no por aplicación: el importe es lo que ese
+   * depósito aplicó a cargos de ESTA comunidad, y sus conceptos y unidades
+   * viajan agregados. Es la misma unidad que el usuario capturó y la misma que
+   * lista la pantalla de Pagos.
+   *
+   * TRASPASOS solo con una caja concreta seleccionada (regla 5): a nivel
+   * comunidad son suma cero y no mueven ningún saldo, así que serían renglones
+   * que no explican nada. Con el filtro puesto sí mueven el saldo de ESA caja,
+   * y sin ellos el saldo acumulado no cerraría.
+   *
+   * SALDO ACUMULADO: saldo inicial del alcance + la suma corrida en el orden de
+   * la lista. Es el saldo DESPUÉS de ese movimiento, no una columna que sume
+   * con las de arriba — filtrar u ordenar la tabla en el cliente no lo
+   * recalcula, y no debe: sigue siendo el saldo que hubo en ese instante.
+   */
+  async movements(
+    tx: TxClient,
+    input: ListMovementsInput,
+  ): Promise<{ items: Movement[]; total: number; totals: MovementTotals }> {
+    const { communityId, from, to } = input;
+    const filter = input.cashAccountId ?? null;
+    // Solo una caja CONCRETA gasta parámetro: el centinela `none` es una
+    // condición `IS NULL` y no lleva valor.
+    const byAccount = filter !== null && filter !== CASH_ACCOUNT_NONE;
+    const scope: unknown[] = byAccount ? [communityId, from, to, filter] : [communityId, from, to];
+    const limitParam = byAccount ? "$5" : "$4";
+    const offsetParam = byAccount ? "$6" : "$5";
+    const offset = (input.page - 1) * input.pageSize;
+
+    const balances = await scopeBalances(tx, communityId, from, to, filter);
+
+    // Una fila por movimiento, ya signada: + entró, − salió.
+    const movementsCte = `
+      movements AS (
+        SELECT p.id::text AS id, 'payment'::text AS kind, p.paid_at::date AS moved_on,
+               SUM(pa.amount) AS amount, p.method::text AS method, p.reference,
+               p.cash_account_id,
+               string_agg(DISTINCT f.concept, ', ' ORDER BY f.concept) AS concept,
+               string_agg(DISTINCT u.code, ', ' ORDER BY u.code)       AS detail,
+               p.created_at
+          FROM billing.payment_allocations pa
+          JOIN billing.payments p ON p.customer_id = pa.customer_id AND p.id = pa.payment_id
+          JOIN billing.charges  c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+          JOIN billing.fees     f ON f.customer_id = c.customer_id  AND f.id = c.fee_id
+          JOIN community.units  u ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
+         WHERE c.community_id = $1
+           AND pa.status <> 'deleted'
+           AND p.status  <> 'deleted'
+           -- ::date en la zona de la SESIÓN (DB_TIMEZONE), igual que summary.
+           AND p.paid_at::date >= $2::date
+           AND p.paid_at::date <= $3::date${cashAccountFilterSql("p.cash_account_id", filter, "$4")}
+         GROUP BY p.id, p.paid_at, p.method, p.reference, p.cash_account_id, p.created_at
+
+        UNION ALL
+
+        SELECT e.id::text, 'expense'::text, e.expense_date,
+               -e.amount, e.method::text, e.reference,
+               e.cash_account_id,
+               e.concept,
+               -- Rubro y proveedor: el contexto que un gasto tiene y que su
+               -- concepto no repite.
+               NULLIF(concat_ws(' · ', ec.name, e.vendor_name), '') AS detail,
+               e.created_at
+          FROM billing.expenses e
+          JOIN billing.expense_categories ec
+            ON ec.customer_id = e.customer_id AND ec.id = e.expense_category_id
+         WHERE e.community_id = $1
+           AND e.status <> 'deleted'
+           AND e.expense_date >= $2::date
+           AND e.expense_date <= $3::date${cashAccountFilterSql("e.cash_account_id", filter, "$4")}
+
+        UNION ALL
+
+        -- El ajuste ya viene signado en la tabla: se copia tal cual.
+        SELECT fa.id::text, 'adjustment'::text, fa.adjusted_at,
+               fa.amount, fa.method::text, NULL::text,
+               fa.cash_account_id,
+               fa.reason, NULL::text,
+               fa.created_at
+          FROM billing.fund_adjustments fa
+         WHERE fa.community_id = $1
+           AND fa.status <> 'deleted'
+           AND fa.adjusted_at >= $2::date
+           AND fa.adjusted_at <= $3::date${cashAccountFilterSql("fa.cash_account_id", filter, "$4")}
+        ${
+          byAccount
+            ? `
+        UNION ALL
+
+        -- Traspasos: solo con una caja seleccionada, y con el signo del lado
+        -- que se está mirando. La caja del renglón es esa misma, no la otra.
+        SELECT t.id::text, 'transfer'::text, t.transferred_at,
+               CASE WHEN t.to_cash_account_id = $4::uuid THEN t.amount ELSE -t.amount END,
+               NULL::text, NULL::text,
+               $4::uuid,
+               t.reason,
+               concat('De ', fca.name, ' a ', tca.name),
+               t.created_at
+          FROM billing.cash_account_transfers t
+          JOIN billing.cash_accounts fca
+            ON fca.customer_id = t.customer_id AND fca.id = t.from_cash_account_id
+          JOIN billing.cash_accounts tca
+            ON tca.customer_id = t.customer_id AND tca.id = t.to_cash_account_id
+         WHERE t.community_id = $1
+           AND t.status <> 'deleted'
+           AND t.transferred_at >= $2::date
+           AND t.transferred_at <= $3::date
+           AND (t.from_cash_account_id = $4::uuid OR t.to_cash_account_id = $4::uuid)`
+            : ""
+        }
+      )
+    `;
+
+    const totalsResult = await tx.query<MovementTotalsRow>(
+      `WITH ${movementsCte}
+       SELECT count(*)::bigint                                            AS count,
+              COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::text   AS income,
+              COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)::text   AS outflow
+         FROM movements`,
+      scope,
+    );
+    const totalsRow = totalsResult.rows[0];
+
+    const itemsResult = await tx.query<MovementRow>(
+      `WITH ${movementsCte}
+       SELECT m.id, m.kind, m.moved_on::text AS moved_on, m.amount::text AS amount,
+              m.method, m.reference, m.concept, m.detail,
+              m.cash_account_id, ca.name AS cash_account_name,
+              -- Suma corrida en el MISMO orden en que se devuelven las filas;
+              -- el saldo inicial se le suma en TS (así no gasta un parámetro).
+              -- La ventana se evalúa antes del LIMIT: paginar no la reinicia.
+              SUM(m.amount) OVER (ORDER BY m.moved_on, m.created_at, m.id
+                                  ROWS UNBOUNDED PRECEDING)::text AS running
+         FROM movements m
+         -- Sin customer_id en el CTE: la RLS ya acota el tenant y el id es la PK.
+         LEFT JOIN billing.cash_accounts ca ON ca.id = m.cash_account_id
+        -- Cronológico ASCENDENTE: un libro de caja se lee del saldo inicial
+        -- hacia abajo, y es el orden que hace legible el saldo acumulado.
+        ORDER BY m.moved_on, m.created_at, m.id
+        LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      [...scope, input.pageSize, offset],
+    );
+
+    return {
+      items: itemsResult.rows.map((row) => ({
+        id: row.id,
+        kind: row.kind as MovementKind,
+        movedOn: row.moved_on,
+        concept: row.concept ?? "",
+        detail: row.detail,
+        method: row.method,
+        reference: row.reference,
+        cashAccount:
+          row.cash_account_id !== null && row.cash_account_name !== null
+            ? { id: row.cash_account_id, name: row.cash_account_name }
+            : null,
+        amount: money(row.amount),
+        balance: addMoney(balances.opening, money(row.running)),
+      })),
+      total: Number(totalsRow?.count ?? 0),
+      totals: {
+        income: money(totalsRow?.income),
+        outflow: money(totalsRow?.outflow),
+        openingBalance: balances.opening,
+        closingBalance: balances.closing,
       },
     };
   },

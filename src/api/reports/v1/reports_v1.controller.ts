@@ -4,7 +4,10 @@ import { config } from "../../../config";
 import { withTransaction } from "../../../core/db/with_transaction";
 import {
   reportsRepository,
+  type ListMovementsInput,
   type ListUnitDebtInput,
+  type Movement,
+  type MovementTotals,
   type ReportRangeInput,
   type ReportSummary,
   type UnitDebt,
@@ -32,5 +35,30 @@ export const reportsController = {
     input: ListUnitDebtInput,
   ): Promise<{ items: UnitDebt[]; total: number; totals: UnitDebtTotals }> {
     return withTransaction(contextFor(req), (tx) => reportsRepository.unitDebt(tx, input));
+  },
+
+  /**
+   * Movimientos del rango. Una sola transacción por el mismo motivo que el
+   * resumen: los saldos de corte y los renglones se validan entre sí
+   * (`inicial + entradas − salidas = final`), y leídos en transacciones
+   * distintas un pago que entre a la mitad haría que el reporte se
+   * contradijera solo.
+   */
+  async movements(
+    req: FastifyRequest,
+    input: ListMovementsInput,
+  ): Promise<{
+    items: Movement[];
+    total: number;
+    totals: MovementTotals;
+    timezone: string;
+  }> {
+    const result = await withTransaction(contextFor(req), (tx) =>
+      reportsRepository.movements(tx, input),
+    );
+    // La zona viaja con la respuesta, como en el resumen: los días del reporte
+    // son los de la operación, no los del dispositivo que lo abre, y el PDF
+    // tiene que poder decirlo.
+    return { ...result, timezone: config.dbTimezone };
   },
 };

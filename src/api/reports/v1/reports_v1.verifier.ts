@@ -53,6 +53,22 @@ export const reportUnitsQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+// --- Entrada: movimientos (GET .../reports/movements) --------------------------
+// Mismo rango de negocio y mismo filtro de caja que el resumen: es el DETALLE
+// de sus cifras de caja, así que cualquier divergencia en los parámetros sería
+// una divergencia en los números.
+export const reportMovementsQueryV1V = new V.ObjectNotNull(
+  {
+    ...pageQueryFields(),
+    from: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+    to: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+    /** Acota a una caja, o a lo que no declaró ninguna (`none`). Los traspasos
+     *  entre cajas SOLO aparecen con una caja concreta seleccionada. */
+    cashAccountId: new V.String({ regex: CASH_ACCOUNT_FILTER_REGEX }),
+  },
+  { strictMode: true },
+);
+
 // --- Salida: piezas del resumen ------------------------------------------------
 
 const rangeV1V = new V.ObjectNotNull({
@@ -199,6 +215,54 @@ export const unitDebtListV1V = new V.ObjectNotNull({
     waived: new V.NumberNotNull(),
     balance: new V.NumberNotNull(),
     overdue: new V.NumberNotNull(),
+  }),
+});
+
+// --- Salida: movimientos -------------------------------------------------------
+
+const movementCashAccountV1V = new V.Object({
+  id: new V.StringNotNull(),
+  name: new V.StringNotNull(),
+});
+
+const movementV1V = new V.ObjectNotNull({
+  /** Id del registro de origen. La identidad de la fila es (kind, id): un pago
+   *  y un gasto no comparten espacio de ids, pero tampoco lo garantizan. */
+  id: new V.StringNotNull(),
+  /** payment | expense | adjustment | transfer. */
+  kind: new V.StringNotNull(),
+  /** Fecha de NEGOCIO (`YYYY-MM-DD`), recortada en la zona de operación. */
+  movedOn: new V.StringNotNull(),
+  concept: new V.StringNotNull(),
+  /** Contexto del tipo: unidades, rubro y proveedor, cajas del traspaso. */
+  detail: new V.String(),
+  /** billing.payment_method; null en un traspaso. */
+  method: new V.String(),
+  reference: new V.String(),
+  cashAccount: movementCashAccountV1V,
+  /** SIGNADO: + entró, − salió. */
+  amount: new V.NumberNotNull(),
+  /** Saldo del alcance DESPUÉS de este movimiento. */
+  balance: new V.NumberNotNull(),
+});
+
+export const movementListV1V = new V.ObjectNotNull({
+  items: new V.ArrayNotNull(movementV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+  /** Zona en la que se recortaron los días (DB_TIMEZONE), igual que el resumen:
+   *  el reporte impreso tiene que decir en qué días está expresado. */
+  timezone: new V.StringNotNull(),
+  /** Totales del rango COMPLETO, no de la página. `closingBalance` viene de la
+   *  misma función que el resumen (no de sumar los renglones): que coincida con
+   *  `openingBalance + income − outflow` es la prueba de que la lista está
+   *  completa. */
+  totals: new V.ObjectNotNull({
+    income: new V.NumberNotNull(),
+    outflow: new V.NumberNotNull(),
+    openingBalance: new V.NumberNotNull(),
+    closingBalance: new V.NumberNotNull(),
   }),
 });
 
