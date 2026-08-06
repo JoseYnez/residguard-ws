@@ -70,6 +70,11 @@ export interface PaymentListItem extends Payment {
   readonly units: PaymentUnitRef[];
   /** Periodos (distintos) de los cargos que el pago cubrió en la comunidad. */
   readonly periods: PaymentPeriodRef[];
+  /** Conceptos (distintos) de las CUOTAS de esos cargos, alfabéticos. Es lo
+   *  que el depósito pagó ("Mantenimiento", "Tarjeta de acceso"); se resuelve
+   *  EN VIVO contra `billing.fees` —igual que el periodo— así que renombrar la
+   *  cuota se lee renombrado en el historial de pagos. */
+  readonly concepts: string[];
 }
 
 export interface RegisterPaymentInput {
@@ -304,6 +309,11 @@ export const paymentsRepository = {
         ON pa.customer_id = p.customer_id AND pa.payment_id = p.id AND pa.status != 'deleted'
       JOIN billing.charges c
         ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+      -- INNER, a diferencia del periodo: charges.fee_id es NOT NULL —el cargo
+      -- suelto también sale de una cuota, de ahí toma su concepto—, así que
+      -- este JOIN no puede perder filas.
+      JOIN billing.fees f
+        ON f.customer_id = c.customer_id AND f.id = c.fee_id
       -- LEFT: un cargo SUELTO no tiene periodo. Con un INNER, un depósito que
       -- solo cubre ventas de tarjetas no aparecería en el listado.
       LEFT JOIN billing.fee_periods fp
@@ -331,7 +341,12 @@ export const paymentsRepository = {
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<
-      PaymentRow & { allocated: string; units: PaymentUnitRef[]; periods: PaymentPeriodRef[] }
+      PaymentRow & {
+        allocated: string;
+        units: PaymentUnitRef[];
+        periods: PaymentPeriodRef[];
+        concepts: string[];
+      }
     >(
       `SELECT p.id, p.community_id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
               ca.id AS cash_account_id, ca.name AS cash_account_name,
@@ -345,7 +360,11 @@ export const paymentsRepository = {
               COALESCE(jsonb_agg(DISTINCT jsonb_build_object(
                 'id', fp.id, 'label', fp.label,
                 'periodStart', fp.period_start, 'periodEnd', fp.period_end))
-                FILTER (WHERE fp.id IS NOT NULL), '[]'::jsonb) AS periods
+                FILTER (WHERE fp.id IS NOT NULL), '[]'::jsonb) AS periods,
+              -- Conceptos de las cuotas cubiertas. DISTINCT sobre el texto (y
+              -- no sobre la cuota): dos cuotas homónimas dicen lo mismo en el
+              -- listado, y el agregado ya los devuelve alfabéticos.
+              jsonb_agg(DISTINCT f.concept) AS concepts
          ${fromWhere}
         GROUP BY p.id, p.community_id, p.amount, p.method, p.paid_at, p.reference,
                  ca.id, ca.name, p.status, p.created_at, p.updated_at
@@ -362,6 +381,7 @@ export const paymentsRepository = {
         // DISTINCT del agregado ordena por el jsonb, no por fecha: se reordena
         // aqui para que el listado lea cronologico.
         periods: [...row.periods].sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
+        concepts: row.concepts,
       })),
       total,
     };

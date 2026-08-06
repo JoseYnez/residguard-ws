@@ -148,6 +148,9 @@ export const paymentListItemV1V = new V.ObjectNotNull({
       periodEnd: new V.StringNotNull(),
     }),
   ),
+  /** Conceptos (distintos, alfabéticos) de las cuotas de esos cargos: QUÉ pagó
+   *  el depósito. Resueltos en vivo contra `billing.fees`, como el periodo. */
+  concepts: new V.ArrayNotNull(new V.StringNotNull()),
 });
 
 export const paymentListV1V = new V.ObjectNotNull({
