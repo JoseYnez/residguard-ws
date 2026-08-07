@@ -6,6 +6,8 @@ import { translatePgError, type MutationResult } from "../../../core/http/pg_err
 import {
   unitMembersRepository,
   type AssignMemberUnitInput,
+  type DirectoryEntry,
+  type ListDirectoryInput,
   type ListMemberUnitsInput,
   type ListUnitMembersInput,
   type MemberUnit,
@@ -35,6 +37,16 @@ export const unitMembersController = {
   async getById(req: FastifyRequest, unitId: string, id: string): Promise<UnitMember | null> {
     return withTransaction(contextFor(req), (tx) =>
       unitMembersRepository.getById(tx, unitId, id),
+    );
+  },
+
+  /** El directorio de contacto de la comunidad (solo lectura). */
+  async listDirectory(
+    req: FastifyRequest,
+    input: ListDirectoryInput,
+  ): Promise<{ items: DirectoryEntry[]; total: number }> {
+    return withTransaction(contextFor(req), (tx) =>
+      unitMembersRepository.listDirectory(tx, input),
     );
   },
 

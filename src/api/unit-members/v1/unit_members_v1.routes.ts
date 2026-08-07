@@ -4,6 +4,7 @@ import { requireCommunityAccess, requireUnitAccess } from "../../../core/auth/co
 import { PERMISSIONS } from "../../../core/auth/permissions";
 import { requirePermission } from "../../../core/auth/require_permission";
 import {
+  communityIdParamV1V,
   communityMemberParamV1V,
   communityMemberScopedIdParamV1V,
   unitIdParamV1V,
@@ -12,7 +13,9 @@ import {
 import { unitMembersController } from "./unit_members_v1.controller";
 import {
   assignMemberUnitV1V,
+  directoryListV1V,
   errorResponseV1V,
+  listDirectoryQueryV1V,
   listMemberUnitsQueryV1V,
   listUnitMembersQueryV1V,
   memberUnitListV1V,
@@ -78,6 +81,33 @@ export async function unitMembersV1Routes(instance: FastifyInstance): Promise<vo
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(200).send(found);
+    },
+  );
+
+  // El DIRECTORIO de contacto de la comunidad (paginado): cada asignación
+  // vigente con su unidad (código/torre/dirección) y el contacto completo de
+  // la persona (todos sus teléfonos activos). Es la vista de consulta "¿quién
+  // está en la 426-A y cómo le llamo?" — solo lectura, mismo permiso de
+  // lectura de la relación.
+  app.get(
+    "/communities/:communityId/directory",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        querystring: listDirectoryQueryV1V,
+        response: { 200: directoryListV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.unitMembersRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const { items, total } = await unitMembersController.listDirectory(req, {
+        communityId: req.params.communityId,
+        page: q.page,
+        pageSize: q.pageSize,
+        search: q.search ?? null,
+      });
+      return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
     },
   );
 

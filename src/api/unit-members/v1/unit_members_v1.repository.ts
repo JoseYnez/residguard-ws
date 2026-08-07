@@ -40,12 +40,36 @@ export interface MemberUnit {
   readonly updatedAt: string;
 }
 
+/** One row of the community DIRECTORY: an assignment with the unit's locating
+ *  data and the person's full contact (every active phone, not just the
+ *  primary — the directory exists to hand over the contact). */
+export interface DirectoryEntry {
+  readonly id: string;
+  readonly unitId: string;
+  readonly unitCode: string;
+  readonly unitTower: string | null;
+  readonly unitAddress: string | null;
+  readonly unitType: string;
+  readonly memberId: string;
+  readonly fullName: string;
+  readonly memberType: string;
+  readonly email: string | null;
+  readonly phones: { phone: string; label: string | null }[];
+}
+
 export interface ListUnitMembersInput {
   readonly unitId: string;
   readonly page: number;
   readonly pageSize: number;
   readonly search?: string | null;
   readonly memberType?: string | null;
+}
+
+export interface ListDirectoryInput {
+  readonly communityId: string;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly search?: string | null;
 }
 
 export interface ListMemberUnitsInput {
@@ -195,6 +219,100 @@ export const unitMembersRepository = {
     );
     const row = result.rows[0];
     return row === undefined ? null : mapUnitViewRow(row);
+  },
+
+  /**
+   * El DIRECTORIO de la comunidad (paginado): cada asignación vigente con la
+   * unidad que la ubica y el contacto completo de la persona (todos sus
+   * teléfonos activos, del principal en adelante). Solo lo vigente: unidad y
+   * persona activas — un directorio lista a quien se puede contactar HOY.
+   * El search alcanza código/torre/dirección de la unidad y nombre de la
+   * persona (el filtrado fino lo hace el cliente sobre la lista drenada).
+   */
+  async listDirectory(
+    tx: TxClient,
+    input: ListDirectoryInput,
+  ): Promise<{ items: DirectoryEntry[]; total: number }> {
+    const search = input.search ?? null;
+    const offset = (input.page - 1) * input.pageSize;
+
+    // FROM/JOINs y WHERE separados: la consulta de items intercala su LATERAL
+    // de teléfonos entre ambos (los JOIN van antes del WHERE).
+    const joins = `
+      FROM community.unit_members um
+      JOIN community.units u   ON u.id = um.unit_id
+      JOIN community.members m ON m.id = um.member_id
+    `;
+    const where = `
+      WHERE um.community_id = $1
+        AND um.status != 'deleted'
+        AND u.status  = 'active'
+        AND m.status  = 'active'
+        AND ($2::text IS NULL
+             OR u.code      ILIKE '%' || $2 || '%'
+             OR u.tower     ILIKE '%' || $2 || '%'
+             OR u.address   ILIKE '%' || $2 || '%'
+             OR m.full_name ILIKE '%' || $2 || '%')
+    `;
+
+    const totalResult = await tx.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count ${joins} ${where}`,
+      [input.communityId, search],
+    );
+    const total = Number(totalResult.rows[0]?.count ?? 0);
+
+    interface DirectoryRow {
+      id: string;
+      unit_id: string;
+      unit_code: string;
+      unit_tower: string | null;
+      unit_address: string | null;
+      unit_type: string;
+      member_id: string;
+      full_name: string;
+      member_type: string;
+      email: string | null;
+      phones: { phone: string; label: string | null }[];
+    }
+
+    // El LATERAL agrega TODOS los teléfonos activos de la persona (json_agg,
+    // del más antiguo — el principal — en adelante). Va solo en la consulta de
+    // items: no participa en el WHERE, así que el count no lo necesita.
+    const itemsResult = await tx.query<DirectoryRow>(
+      `SELECT um.id, um.member_type,
+              u.id AS unit_id, u.code AS unit_code, u.tower AS unit_tower,
+              u.address AS unit_address, u.unit_type::text AS unit_type,
+              m.id AS member_id, m.full_name, m.email::text AS email,
+              COALESCE(ph.phones, '[]'::json) AS phones
+       ${joins}
+       LEFT JOIN LATERAL (
+         SELECT json_agg(json_build_object('phone', p.phone, 'label', p.label)
+                         ORDER BY p.created_at, p.id) AS phones
+           FROM community.member_phones p
+          WHERE p.member_id = m.id AND p.status = 'active'
+       ) ph ON TRUE
+       ${where}
+       ORDER BY u.code, m.full_name
+       LIMIT $3 OFFSET $4`,
+      [input.communityId, search, input.pageSize, offset],
+    );
+
+    return {
+      items: itemsResult.rows.map((row) => ({
+        id: row.id,
+        unitId: row.unit_id,
+        unitCode: row.unit_code,
+        unitTower: row.unit_tower,
+        unitAddress: row.unit_address,
+        unitType: row.unit_type,
+        memberId: row.member_id,
+        fullName: row.full_name,
+        memberType: row.member_type,
+        email: row.email,
+        phones: row.phones,
+      })),
+      total,
+    };
   },
 
   /** ¿Existe la persona (no eliminada) en la comunidad? Para el 404 de las

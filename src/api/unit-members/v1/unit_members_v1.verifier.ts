@@ -48,6 +48,15 @@ export const listMemberUnitsQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+// --- Entrada: directorio (GET /communities/:communityId/directory) -----------
+export const listDirectoryQueryV1V = new V.ObjectNotNull(
+  {
+    ...pageQueryFields(),
+    search: new V.String({ maxLength: 200 }),
+  },
+  { strictMode: true },
+);
+
 // --- Salida: la relación vista desde la unidad --------------------------------
 export const unitMemberV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
@@ -77,6 +86,27 @@ export const memberUnitV1V = new V.ObjectNotNull({
   updatedAt: new V.StringNotNull(),
 });
 
+// --- Salida: una fila del directorio -------------------------------------------
+export const directoryEntryV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  unitId: new V.StringNotNull(),
+  unitCode: new V.StringNotNull(),
+  unitTower: new V.String(),
+  unitAddress: new V.String(),
+  unitType: new V.StringNotNull(),
+  memberId: new V.StringNotNull(),
+  fullName: new V.StringNotNull(),
+  memberType: new V.StringNotNull(),
+  email: new V.String(),
+  /** TODOS los teléfonos activos de la persona, el principal primero. */
+  phones: new V.ArrayNotNull(
+    new V.ObjectNotNull({
+      phone: new V.StringNotNull(),
+      label: new V.String(),
+    }),
+  ),
+});
+
 // --- Salida: listados paginados -----------------------------------------------
 export const unitMemberListV1V = new V.ObjectNotNull({
   items: new V.ArrayNotNull(unitMemberV1V),
@@ -87,6 +117,13 @@ export const unitMemberListV1V = new V.ObjectNotNull({
 
 export const memberUnitListV1V = new V.ObjectNotNull({
   items: new V.ArrayNotNull(memberUnitV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+});
+
+export const directoryListV1V = new V.ObjectNotNull({
+  items: new V.ArrayNotNull(directoryEntryV1V),
   total: new V.NumberNotNull(),
   page: new V.NumberNotNull(),
   pageSize: new V.NumberNotNull(),
