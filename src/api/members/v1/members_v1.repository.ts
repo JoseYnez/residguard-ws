@@ -37,8 +37,13 @@ export interface Member {
   readonly phone: string | null;
   readonly email: string | null;
   readonly notes: string | null;
-  /** Unidades vigentes asociadas a la persona (unit_members no eliminadas). */
-  readonly unitsCount: number;
+  /**
+   * Códigos de las unidades vigentes de la persona, ordenados (arreglo mutable
+   * a propósito: el tipo de respuesta que infiere el verifier de Fastify no
+   * admite ReadonlyArray). El listado los muestra en una sola celda: cuántas
+   * son se ve contándolas, y CUÁLES son es lo que el operador necesita.
+   */
+  readonly unitCodes: string[];
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -78,14 +83,18 @@ export interface CreatePhoneInput {
   readonly label?: string | null;
 }
 
-// El teléfono principal y el conteo de unidades son derivados; el LATERAL toma
-// el vigente más antiguo (mismo orden que la lista completa del detalle).
+// El teléfono principal y las unidades son derivados; el LATERAL toma el
+// vigente más antiguo (mismo orden que la lista completa del detalle) y la
+// subconsulta agrega los códigos de unidad por `code` (mismo orden que la
+// lista de asignaciones del miembro en unit-members/v1).
 const SELECT_COLUMNS = `
   m.id, m.community_id, m.user_id, m.full_name, m.email::text AS email,
   m.notes, m.status, m.created_at, m.updated_at,
   pp.phone AS primary_phone,
-  (SELECT count(*)::int FROM community.unit_members um
-    WHERE um.member_id = m.id AND um.status != 'deleted') AS units_count
+  (SELECT COALESCE(json_agg(u.code ORDER BY u.code), '[]'::json)
+     FROM community.unit_members um
+     JOIN community.units u ON u.id = um.unit_id
+    WHERE um.member_id = m.id AND um.status != 'deleted') AS unit_codes
 `;
 
 const FROM_MEMBERS = `
@@ -110,7 +119,7 @@ interface MemberRow {
   created_at: Date;
   updated_at: Date;
   primary_phone: string | null;
-  units_count: number;
+  unit_codes: string[];
 }
 
 interface PhoneRow {
@@ -129,7 +138,7 @@ function mapRow(row: MemberRow): Member {
     phone: row.primary_phone,
     email: row.email,
     notes: row.notes,
-    unitsCount: row.units_count,
+    unitCodes: row.unit_codes,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -233,7 +242,7 @@ export const membersRepository = {
       );
     }
 
-    // Relee con los derivados (teléfono principal, unitsCount) ya calculados.
+    // Relee con los derivados (teléfono principal, unitCodes) ya calculados.
     return (await this.getById(tx, communityId, id))!;
   },
 

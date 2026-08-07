@@ -67,7 +67,7 @@ export const memberPhoneV1V = new V.ObjectNotNull({
   createdAt: new V.StringNotNull(),
 });
 
-// Campos comunes de la persona; el listado deriva phone/unitsCount y el
+// Campos comunes de la persona; el listado deriva phone/unitCodes y el
 // detalle agrega la lista completa de teléfonos.
 const memberFields = {
   id: new V.StringNotNull(),
@@ -79,8 +79,8 @@ const memberFields = {
   phone: new V.String(),
   email: new V.String(),
   notes: new V.String(),
-  /** Unidades vigentes asociadas a la persona. */
-  unitsCount: new V.NumberNotNull(),
+  /** Códigos de las unidades vigentes de la persona, ordenados. */
+  unitCodes: new V.ArrayNotNull(new V.StringNotNull()),
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
