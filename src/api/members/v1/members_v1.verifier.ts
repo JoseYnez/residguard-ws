@@ -2,7 +2,7 @@ import { Verifiers as V } from "structure-verifier";
 import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifier";
 
 // Contratos del recurso members (community.members): el padrón de personas de
-// una comunidad.
+// una comunidad, con sus teléfonos (community.member_phones) como subrecurso.
 //
 // Dos campos que sí tiene unit-members y aquí NO existen, a propósito:
 //   * `userId` — se registra a la persona, no al usuario. Sale en la respuesta
@@ -11,6 +11,10 @@ import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifi
 //   * `memberType` — el rol califica a la RELACIÓN persona↔unidad (alguien es
 //     propietario de una unidad y arrendatario de otra), así que se pide y se
 //     devuelve en unit-members/v1, nunca aquí.
+//
+// El `phone` de la salida es DERIVADO (el teléfono vigente más antiguo); solo
+// entra en el POST de alta, como comodidad para capturar el primer número. A
+// partir de ahí los teléfonos se gestionan por /phones y el PATCH no lo acepta.
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -18,6 +22,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const createMemberV1V = new V.ObjectNotNull(
   {
     fullName: new V.StringNotNull({ minLength: 1, maxLength: 200 }),
+    /** Primer teléfono de la persona (opcional); crea su fila en /phones. */
     phone: new V.String({ maxLength: 50 }),
     email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
     notes: new V.String({ maxLength: 2000 }),
@@ -29,7 +34,6 @@ export const createMemberV1V = new V.ObjectNotNull(
 export const updateMemberV1V = new V.ObjectNotNull(
   {
     fullName: new V.String({ minLength: 1, maxLength: 200 }),
-    phone: new V.String({ maxLength: 50 }),
     email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
     notes: new V.String({ maxLength: 2000 }),
     status: new V.String({ in: ["active", "inactive"] }),
@@ -46,19 +50,49 @@ export const listMembersQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
-// --- Salida: una persona del padrón -----------------------------------------
-export const memberV1V = new V.ObjectNotNull({
+// --- Entrada: agregar teléfono (POST .../members/:memberId/phones) -----------
+export const createMemberPhoneV1V = new V.ObjectNotNull(
+  {
+    phone: new V.StringNotNull({ minLength: 1, maxLength: 50 }),
+    label: new V.String({ maxLength: 50 }),
+  },
+  { strictMode: true },
+);
+
+// --- Salida: un teléfono de la persona ---------------------------------------
+export const memberPhoneV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  phone: new V.StringNotNull(),
+  label: new V.String(),
+  createdAt: new V.StringNotNull(),
+});
+
+// Campos comunes de la persona; el listado deriva phone/unitsCount y el
+// detalle agrega la lista completa de teléfonos.
+const memberFields = {
   id: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
   /** Usuario vinculado. Hoy SIEMPRE null (ver el encabezado). */
   userId: new V.String(),
   fullName: new V.StringNotNull(),
+  /** Teléfono principal derivado (el vigente más antiguo). */
   phone: new V.String(),
   email: new V.String(),
   notes: new V.String(),
+  /** Unidades vigentes asociadas a la persona. */
+  unitsCount: new V.NumberNotNull(),
   status: new V.StringNotNull(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
+};
+
+// --- Salida: una persona del padrón (item de listado) ------------------------
+export const memberV1V = new V.ObjectNotNull({ ...memberFields });
+
+// --- Salida: detalle con teléfonos (GET one, POST, PATCH) --------------------
+export const memberDetailV1V = new V.ObjectNotNull({
+  ...memberFields,
+  phones: new V.ArrayNotNull(memberPhoneV1V),
 });
 
 // --- Salida: listado paginado -----------------------------------------------

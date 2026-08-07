@@ -15,22 +15,45 @@ import type { TxClient } from "../../../core/db/with_transaction";
 // RELACIÓN persona↔unidad —alguien es propietario de una unidad y arrendatario
 // de otra—, así que vive en unit-members/v1. Este recurso responde QUIÉN es la
 // persona; el rol se lee por unidad.
+//
+// TELÉFONOS: viven en community.member_phones (0..N por persona, cada uno con
+// baja lógica propia). El `phone` de la salida es DERIVADO: el teléfono vigente
+// más antiguo (el "principal" de facto). El detalle expone la lista completa;
+// alta y baja de números van por el subrecurso /phones.
+
+export interface MemberPhone {
+  readonly id: string;
+  readonly phone: string;
+  readonly label: string | null;
+  readonly createdAt: string;
+}
 
 export interface Member {
   readonly id: string;
   readonly communityId: string;
   readonly userId: string | null;
   readonly fullName: string;
+  /** Teléfono principal derivado (el vigente más antiguo); null sin teléfonos. */
   readonly phone: string | null;
   readonly email: string | null;
   readonly notes: string | null;
+  /** Unidades vigentes asociadas a la persona (unit_members no eliminadas). */
+  readonly unitsCount: number;
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
+/** Miembro con su lista completa de teléfonos (GET detalle y mutaciones). */
+export interface MemberDetail extends Member {
+  // Arreglo mutable a propósito: el tipo de respuesta que infiere el verifier
+  // de Fastify no admite ReadonlyArray.
+  readonly phones: MemberPhone[];
+}
+
 export interface CreateMemberInput {
   readonly fullName: string;
+  /** Primer teléfono de la persona; crea la fila en member_phones. */
   readonly phone?: string | null;
   readonly email?: string | null;
   readonly notes?: string | null;
@@ -38,7 +61,6 @@ export interface CreateMemberInput {
 
 export interface UpdateMemberInput {
   readonly fullName?: string;
-  readonly phone?: string | null;
   readonly email?: string | null;
   readonly notes?: string | null;
   readonly status?: string;
@@ -51,9 +73,30 @@ export interface ListMembersInput {
   readonly search?: string | null;
 }
 
+export interface CreatePhoneInput {
+  readonly phone: string;
+  readonly label?: string | null;
+}
+
+// El teléfono principal y el conteo de unidades son derivados; el LATERAL toma
+// el vigente más antiguo (mismo orden que la lista completa del detalle).
 const SELECT_COLUMNS = `
-  id, community_id, user_id, full_name, phone, email::text AS email,
-  notes, status, created_at, updated_at
+  m.id, m.community_id, m.user_id, m.full_name, m.email::text AS email,
+  m.notes, m.status, m.created_at, m.updated_at,
+  pp.phone AS primary_phone,
+  (SELECT count(*)::int FROM community.unit_members um
+    WHERE um.member_id = m.id AND um.status != 'deleted') AS units_count
+`;
+
+const FROM_MEMBERS = `
+  FROM community.members m
+  LEFT JOIN LATERAL (
+    SELECT p.phone
+      FROM community.member_phones p
+     WHERE p.member_id = m.id AND p.status = 'active'
+     ORDER BY p.created_at, p.id
+     LIMIT 1
+  ) pp ON TRUE
 `;
 
 interface MemberRow {
@@ -61,12 +104,20 @@ interface MemberRow {
   community_id: string;
   user_id: string | null;
   full_name: string;
-  phone: string | null;
   email: string | null;
   notes: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
+  primary_phone: string | null;
+  units_count: number;
+}
+
+interface PhoneRow {
+  id: string;
+  phone: string;
+  label: string | null;
+  created_at: Date;
 }
 
 function mapRow(row: MemberRow): Member {
@@ -75,37 +126,50 @@ function mapRow(row: MemberRow): Member {
     communityId: row.community_id,
     userId: row.user_id,
     fullName: row.full_name,
-    phone: row.phone,
+    phone: row.primary_phone,
     email: row.email,
     notes: row.notes,
+    unitsCount: row.units_count,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
+function mapPhoneRow(row: PhoneRow): MemberPhone {
+  return {
+    id: row.id,
+    phone: row.phone,
+    label: row.label,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
 export const membersRepository = {
-  /** Personas del padrón de la comunidad (paginado). Oculta las 'deleted'. */
+  /** Personas del padrón de la comunidad (paginado). Oculta las 'deleted'.
+   *  El search también alcanza cualquier teléfono vigente de la persona. */
   async list(tx: TxClient, input: ListMembersInput): Promise<{ items: Member[]; total: number }> {
     const search = input.search ?? null;
     const offset = (input.page - 1) * input.pageSize;
 
     const where = `
-      WHERE community_id = $1
-        AND status != 'deleted'
-        AND ($2::text IS NULL OR full_name ILIKE '%' || $2 || '%' OR email ILIKE '%' || $2 || '%'
-                              OR phone     ILIKE '%' || $2 || '%')
+      WHERE m.community_id = $1
+        AND m.status != 'deleted'
+        AND ($2::text IS NULL OR m.full_name ILIKE '%' || $2 || '%' OR m.email ILIKE '%' || $2 || '%'
+             OR EXISTS (SELECT 1 FROM community.member_phones ph
+                         WHERE ph.member_id = m.id AND ph.status = 'active'
+                           AND ph.phone ILIKE '%' || $2 || '%'))
     `;
 
     const totalResult = await tx.query<{ count: string }>(
-      `SELECT count(*)::bigint AS count FROM community.members ${where}`,
+      `SELECT count(*)::bigint AS count FROM community.members m ${where}`,
       [input.communityId, search],
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
 
     const itemsResult = await tx.query<MemberRow>(
-      `SELECT ${SELECT_COLUMNS} FROM community.members ${where}
-        ORDER BY full_name
+      `SELECT ${SELECT_COLUMNS} ${FROM_MEMBERS} ${where}
+        ORDER BY m.full_name
         LIMIT $3 OFFSET $4`,
       [input.communityId, search, input.pageSize, offset],
     );
@@ -113,43 +177,64 @@ export const membersRepository = {
     return { items: itemsResult.rows.map(mapRow), total };
   },
 
-  /** Una persona del padrón. null si no existe o está dada de baja. */
-  async getById(tx: TxClient, communityId: string, id: string): Promise<Member | null> {
+  /** Una persona del padrón con sus teléfonos. null si no existe o está de baja. */
+  async getById(tx: TxClient, communityId: string, id: string): Promise<MemberDetail | null> {
     const result = await tx.query<MemberRow>(
-      `SELECT ${SELECT_COLUMNS} FROM community.members
-        WHERE id = $1 AND community_id = $2 AND status != 'deleted'`,
+      `SELECT ${SELECT_COLUMNS} ${FROM_MEMBERS}
+        WHERE m.id = $1 AND m.community_id = $2 AND m.status != 'deleted'`,
       [id, communityId],
     );
     const row = result.rows[0];
-    return row === undefined ? null : mapRow(row);
+    if (row === undefined) {
+      return null;
+    }
+    const phones = await this.listPhones(tx, communityId, id);
+    return { ...mapRow(row), phones };
+  },
+
+  /** ¿Existe la persona (no eliminada) en la comunidad? Para el 404 de los
+   *  subrecursos (/phones) antes de mutar. */
+  async exists(tx: TxClient, communityId: string, id: string): Promise<boolean> {
+    const result = await tx.query(
+      `SELECT 1 FROM community.members
+        WHERE id = $1 AND community_id = $2 AND status != 'deleted'`,
+      [id, communityId],
+    );
+    return (result.rowCount ?? 0) > 0;
   },
 
   /**
-   * Inserta una persona en el padrón. Puede lanzar 23505 (ya hay alguien con
-   * ese email en la comunidad) o 23503 (la comunidad no existe en el tenant).
-   * `user_id` no se parametriza: nace NULL por omisión.
+   * Inserta una persona en el padrón; si trae teléfono, crea también su primera
+   * fila en member_phones (misma transacción). Puede lanzar 23505 (ya hay
+   * alguien con ese email en la comunidad) o 23503 (la comunidad no existe en
+   * el tenant). `user_id` no se parametriza: nace NULL por omisión.
    */
   async create(
     tx: TxClient,
     customerId: string,
     communityId: string,
     input: CreateMemberInput,
-  ): Promise<Member> {
-    const result = await tx.query<MemberRow>(
+  ): Promise<MemberDetail> {
+    const result = await tx.query<{ id: string }>(
       `INSERT INTO community.members
-         (customer_id, community_id, full_name, phone, email, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING ${SELECT_COLUMNS}`,
-      [
-        customerId,
-        communityId,
-        input.fullName,
-        input.phone ?? null,
-        input.email ?? null,
-        input.notes ?? null,
-      ],
+         (customer_id, community_id, full_name, email, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [customerId, communityId, input.fullName, input.email ?? null, input.notes ?? null],
     );
-    return mapRow(result.rows[0]!);
+    const id = result.rows[0]!.id;
+
+    const phone = input.phone ?? null;
+    if (phone !== null) {
+      await tx.query(
+        `INSERT INTO community.member_phones (customer_id, community_id, member_id, phone)
+         VALUES ($1, $2, $3, $4)`,
+        [customerId, communityId, id, phone],
+      );
+    }
+
+    // Relee con los derivados (teléfono principal, unitsCount) ya calculados.
+    return (await this.getById(tx, communityId, id))!;
   },
 
   /** Actualización parcial. Devuelve null si no existe (o está 'deleted'). */
@@ -158,7 +243,7 @@ export const membersRepository = {
     communityId: string,
     id: string,
     input: UpdateMemberInput,
-  ): Promise<Member | null> {
+  ): Promise<MemberDetail | null> {
     const sets: string[] = [];
     const params: unknown[] = [];
     let i = 1;
@@ -170,7 +255,6 @@ export const membersRepository = {
     };
 
     if (input.fullName !== undefined) push("full_name", input.fullName);
-    if (input.phone !== undefined) push("phone", input.phone);
     if (input.email !== undefined) push("email", input.email);
     if (input.notes !== undefined) push("notes", input.notes);
     if (input.status !== undefined) push("status", input.status, "::public.record_status");
@@ -180,22 +264,97 @@ export const membersRepository = {
     }
 
     params.push(id, communityId);
-    const result = await tx.query<MemberRow>(
+    const result = await tx.query(
       `UPDATE community.members SET ${sets.join(", ")}
-        WHERE id = $${i} AND community_id = $${i + 1} AND status != 'deleted'
-        RETURNING ${SELECT_COLUMNS}`,
+        WHERE id = $${i} AND community_id = $${i + 1} AND status != 'deleted'`,
       params,
     );
-    const row = result.rows[0];
-    return row === undefined ? null : mapRow(row);
+    if ((result.rowCount ?? 0) === 0) {
+      return null;
+    }
+    return this.getById(tx, communityId, id);
   },
 
-  /** Baja lógica (status='deleted'). false si no existía o ya estaba de baja. */
+  /**
+   * Baja lógica de la persona Y de lo que cuelga de ella (teléfonos y
+   * asignaciones de unidad vigentes): un padrón dado de baja no debe seguir
+   * apareciendo en las unidades ni conservar números "vivos" huérfanos.
+   * false si no existía o ya estaba de baja.
+   */
   async softDelete(tx: TxClient, communityId: string, id: string): Promise<boolean> {
     const result = await tx.query(
       `UPDATE community.members SET status = 'deleted'
         WHERE id = $1 AND community_id = $2 AND status != 'deleted'`,
       [id, communityId],
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      return false;
+    }
+    await tx.query(
+      `UPDATE community.member_phones SET status = 'deleted'
+        WHERE member_id = $1 AND status != 'deleted'`,
+      [id],
+    );
+    await tx.query(
+      `UPDATE community.unit_members SET status = 'deleted'
+        WHERE member_id = $1 AND status != 'deleted'`,
+      [id],
+    );
+    return true;
+  },
+
+  // --- Teléfonos (community.member_phones) -----------------------------------
+
+  /** Teléfonos vigentes de la persona, del más antiguo (el principal) al más
+   *  nuevo. El JOIN ancla el miembro a la comunidad de la ruta. */
+  async listPhones(
+    tx: TxClient,
+    communityId: string,
+    memberId: string,
+  ): Promise<MemberPhone[]> {
+    const result = await tx.query<PhoneRow>(
+      `SELECT p.id, p.phone, p.label, p.created_at
+         FROM community.member_phones p
+         JOIN community.members m ON m.id = p.member_id
+        WHERE p.member_id = $1 AND m.community_id = $2 AND p.status = 'active'
+        ORDER BY p.created_at, p.id`,
+      [memberId, communityId],
+    );
+    return result.rows.map(mapPhoneRow);
+  },
+
+  /**
+   * Agrega un teléfono a la persona. Puede lanzar 23505 (ese número ya está
+   * vigente para la persona) o 23503 (la persona no existe en esa comunidad —
+   * la FK compuesta lo remata aunque el controller ya haya verificado).
+   */
+  async addPhone(
+    tx: TxClient,
+    customerId: string,
+    communityId: string,
+    memberId: string,
+    input: CreatePhoneInput,
+  ): Promise<MemberPhone> {
+    const result = await tx.query<PhoneRow>(
+      `INSERT INTO community.member_phones (customer_id, community_id, member_id, phone, label)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, phone, label, created_at`,
+      [customerId, communityId, memberId, input.phone, input.label ?? null],
+    );
+    return mapPhoneRow(result.rows[0]!);
+  },
+
+  /** Baja lógica de un teléfono. false si no existía o ya estaba de baja. */
+  async softDeletePhone(
+    tx: TxClient,
+    communityId: string,
+    memberId: string,
+    id: string,
+  ): Promise<boolean> {
+    const result = await tx.query(
+      `UPDATE community.member_phones SET status = 'deleted'
+        WHERE id = $1 AND member_id = $2 AND community_id = $3 AND status != 'deleted'`,
+      [id, memberId, communityId],
     );
     return (result.rowCount ?? 0) > 0;
   },

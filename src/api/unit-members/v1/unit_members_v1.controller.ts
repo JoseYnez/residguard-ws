@@ -5,21 +5,26 @@ import { withTransaction } from "../../../core/db/with_transaction";
 import { translatePgError, type MutationResult } from "../../../core/http/pg_errors";
 import {
   unitMembersRepository,
-  type CreateUnitMemberInput,
+  type AssignMemberUnitInput,
+  type ListMemberUnitsInput,
   type ListUnitMembersInput,
+  type MemberUnit,
   type UnitMember,
-  type UpdateUnitMemberInput,
 } from "./unit_members_v1.repository";
 
-// Orquestación del recurso unit-members. El acceso a la unidad de la ruta ya
-// lo garantizó requireUnitAccess (unidad → comunidad → membresía del actor).
+// Orquestación del recurso unit-members. Para las lecturas por unidad el
+// acceso ya lo garantizó requireUnitAccess (unidad → comunidad → membresía);
+// para las rutas por miembro, requireCommunityAccess — y el controller además
+// resuelve el 404 del miembro inexistente antes de tocar la relación.
 
 const PG_MESSAGES = {
   conflict: "La persona ya está asociada a esta unidad.",
-  reference: "El usuario indicado no existe en la plataforma (o pertenece a otra cuenta).",
+  reference: "La unidad indicada no existe en esta comunidad.",
 } as const;
 
 export const unitMembersController = {
+  // --- Vista por unidad (solo lectura) ---------------------------------------
+
   async list(
     req: FastifyRequest,
     input: ListUnitMembersInput,
@@ -33,45 +38,75 @@ export const unitMembersController = {
     );
   },
 
-  async create(
-    req: FastifyRequest,
-    unitId: string,
-    input: CreateUnitMemberInput,
-  ): Promise<MutationResult<UnitMember>> {
-    const claims = requireAuth(req);
-    try {
-      const member = await withTransaction(contextFor(req), (tx) =>
-        unitMembersRepository.create(tx, claims.customerId, unitId, input),
-      );
-      return { ok: true, value: member };
-    } catch (err) {
-      return { ok: false, error: translatePgError(err, PG_MESSAGES) };
-    }
-  },
+  // --- Vista por miembro (CRUD) ----------------------------------------------
 
-  /** `null` (fuera de ok/error) cuando el miembro no existe → 404 en la route. */
-  async update(
+  /** `null` cuando el miembro no existe en la comunidad → 404 en la route. */
+  async listByMember(
     req: FastifyRequest,
-    unitId: string,
-    id: string,
-    input: UpdateUnitMemberInput,
-  ): Promise<MutationResult<UnitMember> | null> {
-    try {
-      const member = await withTransaction(contextFor(req), (tx) =>
-        unitMembersRepository.update(tx, unitId, id, input),
+    input: ListMemberUnitsInput,
+  ): Promise<{ items: MemberUnit[]; total: number } | null> {
+    return withTransaction(contextFor(req), async (tx) => {
+      const exists = await unitMembersRepository.memberExists(
+        tx,
+        input.communityId,
+        input.memberId,
       );
-      if (member === null) {
+      if (!exists) {
         return null;
       }
-      return { ok: true, value: member };
+      return unitMembersRepository.listByMember(tx, input);
+    });
+  },
+
+  /** `null` cuando el miembro no existe en la comunidad → 404 en la route. */
+  async assign(
+    req: FastifyRequest,
+    communityId: string,
+    memberId: string,
+    input: AssignMemberUnitInput,
+  ): Promise<MutationResult<MemberUnit> | null> {
+    const claims = requireAuth(req);
+    try {
+      return await withTransaction(contextFor(req), async (tx) => {
+        const exists = await unitMembersRepository.memberExists(tx, communityId, memberId);
+        if (!exists) {
+          return null;
+        }
+        const assignment = await unitMembersRepository.assign(
+          tx,
+          claims.customerId,
+          communityId,
+          memberId,
+          input,
+        );
+        return { ok: true as const, value: assignment };
+      });
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }
   },
 
-  async softDelete(req: FastifyRequest, unitId: string, id: string): Promise<boolean> {
+  /** `null` cuando la asignación no existe → 404 en la route. */
+  async updateAssignment(
+    req: FastifyRequest,
+    communityId: string,
+    memberId: string,
+    id: string,
+    memberType: string,
+  ): Promise<MemberUnit | null> {
     return withTransaction(contextFor(req), (tx) =>
-      unitMembersRepository.softDelete(tx, unitId, id),
+      unitMembersRepository.updateAssignment(tx, communityId, memberId, id, memberType),
+    );
+  },
+
+  async removeAssignment(
+    req: FastifyRequest,
+    communityId: string,
+    memberId: string,
+    id: string,
+  ): Promise<boolean> {
+    return withTransaction(contextFor(req), (tx) =>
+      unitMembersRepository.softDeleteAssignment(tx, communityId, memberId, id),
     );
   },
 };

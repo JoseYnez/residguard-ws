@@ -60,6 +60,24 @@ export const idParamV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+/** Subrecursos de una persona del padrón: /communities/:communityId/members/:memberId/... */
+export const communityMemberParamV1V = new V.ObjectNotNull(
+  {
+    communityId: new V.StringNotNull({ regex: UUID_REGEX }),
+    memberId: new V.StringNotNull({ regex: UUID_REGEX }),
+  },
+  { strictMode: true },
+);
+
+export const communityMemberScopedIdParamV1V = new V.ObjectNotNull(
+  {
+    communityId: new V.StringNotNull({ regex: UUID_REGEX }),
+    memberId: new V.StringNotNull({ regex: UUID_REGEX }),
+    id: new V.StringNotNull({ regex: UUID_REGEX }),
+  },
+  { strictMode: true },
+);
+
 // --- Paginación --------------------------------------------------------------
 
 /** Campos estándar de querystring paginada (tope de servidor: 100). */

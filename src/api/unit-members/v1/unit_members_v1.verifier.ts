@@ -6,39 +6,31 @@ import {
 } from "../../common/common_v1.verifier";
 
 // Contratos del recurso unit-members (community.unit_members): la relación
-// persona <-> unidad. userId NULL = "relación simulada" (la persona aún no
-// está registrada en la plataforma); al registrarse se le asigna userId.
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// PURA persona↔unidad. Los datos de la persona (nombre, contacto) salen del
+// padrón por member_id — aquí ya no viajan como entrada. Dos vistas:
+//   * por unidad  (GET /units/:unitId/members)               — solo lectura
+//   * por miembro (/communities/:cId/members/:memberId/units) — CRUD
 
 export const MEMBER_TYPES = ["owner", "tenant", "resident"] as const;
 
-// --- Entrada: crear (POST /units/:unitId/members) ----------------------------
-export const createUnitMemberV1V = new V.ObjectNotNull(
+// --- Entrada: asignar unidad (POST .../members/:memberId/units) --------------
+export const assignMemberUnitV1V = new V.ObjectNotNull(
+  {
+    unitId: new V.StringNotNull({ regex: UUID_REGEX }),
+    memberType: new V.StringNotNull({ in: [...MEMBER_TYPES] }),
+  },
+  { strictMode: true },
+);
+
+// --- Entrada: cambiar rol (PATCH .../members/:memberId/units/:id) ------------
+export const updateMemberUnitV1V = new V.ObjectNotNull(
   {
     memberType: new V.StringNotNull({ in: [...MEMBER_TYPES] }),
-    fullName: new V.StringNotNull({ minLength: 1, maxLength: 200 }),
-    phone: new V.String({ maxLength: 50 }),
-    email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
-    userId: new V.String({ regex: UUID_REGEX }),
   },
   { strictMode: true },
 );
 
-// --- Entrada: actualizar (PATCH /units/:unitId/members/:id) ------------------
-export const updateUnitMemberV1V = new V.ObjectNotNull(
-  {
-    memberType: new V.String({ in: [...MEMBER_TYPES] }),
-    fullName: new V.String({ minLength: 1, maxLength: 200 }),
-    phone: new V.String({ maxLength: 50 }),
-    email: new V.String({ maxLength: 320, regex: EMAIL_REGEX }),
-    userId: new V.String({ regex: UUID_REGEX }),
-    status: new V.String({ in: ["active", "inactive"] }),
-  },
-  { strictMode: true },
-);
-
-// --- Entrada: listar (GET /units/:unitId/members) -----------------------------
+// --- Entrada: listar por unidad (GET /units/:unitId/members) ------------------
 export const listUnitMembersQueryV1V = new V.ObjectNotNull(
   {
     ...pageQueryFields(),
@@ -48,13 +40,22 @@ export const listUnitMembersQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
-// --- Salida: un miembro ----------------------------------------------------------
+// --- Entrada: listar por miembro (GET .../members/:memberId/units) -----------
+export const listMemberUnitsQueryV1V = new V.ObjectNotNull(
+  {
+    ...pageQueryFields(),
+  },
+  { strictMode: true },
+);
+
+// --- Salida: la relación vista desde la unidad --------------------------------
 export const unitMemberV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
   unitId: new V.StringNotNull(),
-  userId: new V.String(),
+  memberId: new V.StringNotNull(),
   memberType: new V.StringNotNull(),
   fullName: new V.StringNotNull(),
+  /** Teléfono principal derivado del padrón. */
   phone: new V.String(),
   email: new V.String(),
   status: new V.StringNotNull(),
@@ -62,9 +63,30 @@ export const unitMemberV1V = new V.ObjectNotNull({
   updatedAt: new V.StringNotNull(),
 });
 
-// --- Salida: listado paginado -----------------------------------------------------
+// --- Salida: la relación vista desde el miembro --------------------------------
+export const memberUnitV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  unitId: new V.StringNotNull(),
+  memberId: new V.StringNotNull(),
+  memberType: new V.StringNotNull(),
+  unitCode: new V.StringNotNull(),
+  unitTower: new V.String(),
+  unitType: new V.StringNotNull(),
+  status: new V.StringNotNull(),
+  createdAt: new V.StringNotNull(),
+  updatedAt: new V.StringNotNull(),
+});
+
+// --- Salida: listados paginados -----------------------------------------------
 export const unitMemberListV1V = new V.ObjectNotNull({
   items: new V.ArrayNotNull(unitMemberV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+});
+
+export const memberUnitListV1V = new V.ObjectNotNull({
+  items: new V.ArrayNotNull(memberUnitV1V),
   total: new V.NumberNotNull(),
   page: new V.NumberNotNull(),
   pageSize: new V.NumberNotNull(),
