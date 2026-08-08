@@ -12,6 +12,7 @@ import {
   type ReportSummary,
   type UnitDebt,
   type UnitDebtTotals,
+  type UnitChargeStatement,
   type UnitStatement,
   type UnitStatementInput,
 } from "./reports_v1.repository";
@@ -58,6 +59,29 @@ export const reportsController = {
     }
     // La zona viaja con la respuesta, como en los demás reportes: los días del
     // estado de cuenta son los de la operación, y el PDF tiene que decirlo.
+    return { ...result, timezone: config.dbTimezone };
+  },
+
+  /**
+   * Estado de cuenta V2 (por cargo). Una sola transacción por el mismo motivo
+   * que la V1: los renglones y los totales se validan entre sí
+   * (`cargos − pagado − condonado = saldo`), y leídos en transacciones
+   * distintas un pago que entrara a la mitad los haría discrepar. `null` =
+   * unidad inexistente o fuera de la comunidad → 404.
+   */
+  async unitChargeStatement(
+    req: FastifyRequest,
+    input: UnitStatementInput,
+  ): Promise<(UnitChargeStatement & { timezone: string }) | null> {
+    const result = await withTransaction(contextFor(req), (tx) =>
+      reportsRepository.unitChargeStatement(tx, input),
+    );
+    if (result === null) {
+      return null;
+    }
+    // La zona viaja con la respuesta, igual que en la V1: las fechas de pago de
+    // esta vista son días recortados en la zona de operación, y el PDF tiene
+    // que poder decirlo.
     return { ...result, timezone: config.dbTimezone };
   },
 

@@ -331,6 +331,75 @@ export const unitStatementV1V = new V.ObjectNotNull({
   }),
 });
 
+// --- Salida: estado de cuenta por unidad, V2 (por cargo) -----------------------
+
+/**
+ * UN cargo del estado de cuenta V2. A diferencia de la V1 no hay movimientos
+ * intercalados ni saldo corrido: la fila es el CARGO y se cierra sola
+ * (`appliedAmount − paid − waived = balance`), y trae las tres cosas que en el
+ * ledger hay que reconstruir a mano — si está pagado, cuándo se pagó y de qué
+ * periodo es.
+ */
+const chargeStatementEntryV1V = new V.ObjectNotNull({
+  /** Id del CARGO (`billing.charges.id`) — aquí sí identifica la fila sola. */
+  id: new V.StringNotNull(),
+  /** "Mantenimiento", "Tarjeta de acceso ×2". */
+  concept: new V.StringNotNull(),
+  /** Periodo ya legible ("Enero-2026", "Cuota extraordinaria bardas");
+   *  null = cargo SUELTO, que no devenga periodo. */
+  period: new V.String(),
+  periodStart: new V.String(),
+  periodEnd: new V.String(),
+  /** Detalle libre del cargo (folios, motivo de la multa). */
+  note: new V.String(),
+  quantity: new V.NumberNotNull(),
+  /** Día de DEVENGO (`YYYY-MM-DD`): el inicio del periodo o, en un suelto, su
+   *  vencimiento. Es el día por el que el rango filtra. */
+  accruedOn: new V.StringNotNull(),
+  dueDate: new V.StringNotNull(),
+  appliedAmount: new V.NumberNotNull(),
+  /** Cubierto con DINERO, sin importar cuándo entró. */
+  paid: new V.NumberNotNull(),
+  waived: new V.NumberNotNull(),
+  balance: new V.NumberNotNull(),
+  /** billing.charge_status: pending | partial | paid | waived. */
+  paymentStatus: new V.StringNotNull(),
+  overdue: new V.BooleanNotNull(),
+  /** Fecha del ÚLTIMO pago aplicado; null si nunca recibió dinero. */
+  paidOn: new V.String(),
+  /** Cuántos depósitos distintos lo tocaron — `paidOn` es la fecha del último. */
+  paymentCount: new V.NumberNotNull(),
+  /** Fecha de la última condonación; null si no se condonó nada. */
+  waivedOn: new V.String(),
+});
+
+export const unitChargeStatementV1V = new V.ObjectNotNull({
+  /** La unidad, resuelta por el servidor (mismo motivo que en la V1). */
+  unit: new V.ObjectNotNull({
+    id: new V.StringNotNull(),
+    code: new V.StringNotNull(),
+  }),
+  items: new V.ArrayNotNull(chargeStatementEntryV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+  /** Zona en la que se recortaron los días (DB_TIMEZONE), como los demás
+   *  reportes. */
+  timezone: new V.StringNotNull(),
+  /** Totales del rango COMPLETO, no de la página. Invariante:
+   *  charged − paid − waived = balance. */
+  totals: new V.ObjectNotNull({
+    charged: new V.NumberNotNull(),
+    paid: new V.NumberNotNull(),
+    waived: new V.NumberNotNull(),
+    balance: new V.NumberNotNull(),
+    /** Parte del saldo cuyos cargos ya vencieron. */
+    overdue: new V.NumberNotNull(),
+    /** Cuántos cargos del rango ya no deben nada. */
+    settledCount: new V.NumberNotNull(),
+  }),
+});
+
 export const movementListV1V = new V.ObjectNotNull({
   items: new V.ArrayNotNull(movementV1V),
   total: new V.NumberNotNull(),

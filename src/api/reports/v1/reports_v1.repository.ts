@@ -282,6 +282,73 @@ export interface UnitStatementInput {
   readonly pageSize: number;
 }
 
+/**
+ * UN cargo del estado de cuenta V2 — la misma fila que lista la consulta de
+ * cargos (charges_v1), respondiendo además las tres preguntas que en el ledger
+ * V1 hay que reconstruir renglón por renglón: si ya está pagado, CUÁNDO se pagó
+ * y de qué periodo es.
+ *
+ * No lleva saldo corrido: en esta vista cada renglón se cierra solo (importe −
+ * pagado − condonado = saldo), así que sumar la columna de saldos no significa
+ * nada. Lo que cuadra es el total del rango.
+ */
+export interface ChargeStatementEntry {
+  readonly id: string;
+  /** "Mantenimiento", "Tarjeta de acceso ×2" — concepto de la cuota + piezas. */
+  readonly concept: string;
+  /** Periodo del cargo ya legible (etiqueta propia o derivada del rango);
+   *  null = cargo SUELTO, que no devenga periodo. */
+  readonly period: string | null;
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
+  /** Detalle libre del cargo (folios, motivo de la multa). */
+  readonly note: string | null;
+  readonly quantity: number;
+  /** Día de DEVENGO — `COALESCE(period_start, due_date)`, el mismo con el que
+   *  el resto del reporte ubica un cargo en el tiempo. Es lo que el rango
+   *  filtra. */
+  readonly accruedOn: string;
+  readonly dueDate: string;
+  readonly appliedAmount: number;
+  /** Cubierto con DINERO (aplicaciones activas), sin importar cuándo entró. */
+  readonly paid: number;
+  readonly waived: number;
+  /** appliedAmount − paid − waived: lo que el cargo sigue debiendo. */
+  readonly balance: number;
+  /** `billing.charge_status` tal cual lo mantiene la BD (pending | partial |
+   *  paid | waived) — el mismo valor que muestra la pantalla de Cargos. */
+  readonly paymentStatus: string;
+  readonly overdue: boolean;
+  /** Fecha del ÚLTIMO pago aplicado al cargo; null si nunca recibió dinero.
+   *  Con el cargo saldado es el día en que quedó cubierto. */
+  readonly paidOn: string | null;
+  /** Cuántos DEPÓSITOS distintos lo tocaron (2 = se pagó en dos exhibiciones);
+   *  `paidOn` es la fecha del último. */
+  readonly paymentCount: number;
+  /** Fecha de la última condonación; null si no se condonó nada. */
+  readonly waivedOn: string | null;
+}
+
+/** Totales del rango COMPLETO (no de la página). Invariante por construcción:
+ *  `charged − paid − waived = balance`. */
+export interface ChargeStatementTotals {
+  readonly charged: number;
+  readonly paid: number;
+  readonly waived: number;
+  readonly balance: number;
+  /** Parte del saldo cuyos cargos ya vencieron. */
+  readonly overdue: number;
+  /** Cuántos de los cargos del rango ya no deben nada (pagados o condonados). */
+  readonly settledCount: number;
+}
+
+export interface UnitChargeStatement {
+  readonly unit: { readonly id: string; readonly code: string };
+  readonly items: ChargeStatementEntry[];
+  readonly total: number;
+  readonly totals: ChargeStatementTotals;
+}
+
 /** Centinela del filtro de caja: solo los movimientos SIN caja declarada. */
 export const CASH_ACCOUNT_NONE = "none";
 
@@ -588,9 +655,146 @@ const STATEMENT_ENTRIES_CTE = `
   )
 `;
 
+/**
+ * El estado de cuenta V2, visto desde el CARGO: una fila por cargo ACTIVO de la
+ * unidad, con lo que se le aplicó, lo que se le condonó, su saldo y las fechas
+ * que cierran la historia de esa fila. `$1` = communityId, `$2` = unitId.
+ *
+ * Mismas reglas que el resto del archivo, y a propósito las MISMAS que la
+ * consulta de cargos (charges_v1.repository.ts), que es de donde sale esta
+ * vista:
+ *
+ * - `status = 'active'` y el saldo agregado en LATERAL (regla 3): el saldo de
+ *   cada fila reproduce el de la pantalla de Cargos y el de
+ *   `fn_get_charge_balance`, y el total del rango reproduce el adeudo de la
+ *   unidad cuando el rango abarca todo su historial.
+ * - JOIN LEFT con `fee_periods` (§3 de CLAUDE.md): un cargo SUELTO no tiene
+ *   periodo, y con un INNER la venta de tarjetas desaparecería de la vista.
+ * - El cargo se ubica por su DEVENGO, `COALESCE(period_start, due_date)`
+ *   (regla 4) — el mismo día con el que el ledger V1 lo ordena, para que las
+ *   dos versiones metan los mismos cargos en el mismo rango.
+ * - `payment_status` viaja como lo mantiene la BD (vías sancionadas), no
+ *   derivado aquí: es el mismo estatus que muestra la pantalla de Cargos, y dos
+ *   definiciones del mismo badge es como dejan de coincidir.
+ *
+ * LAS FECHAS DE PAGO salen de las aplicaciones ACTIVAS del cargo: `paid_on` es
+ * la del último depósito que lo tocó — en un cargo saldado, el día en que quedó
+ * cubierto — y `payment_count` dice si hubo más de uno, que es lo que impide
+ * leer esa fecha como "el día en que se pagó todo" cuando fueron dos
+ * exhibiciones. El pago borrado no cuenta por partida doble (`pa.status` y
+ * `p.status`): anular un pago soft-borra ambas cosas.
+ */
+const CHARGE_STATEMENT_CTE = `
+  unit_charges AS (
+    SELECT c.id::text AS id,
+           f.concept || CASE WHEN c.quantity > 1 THEN ' ×' || c.quantity ELSE '' END AS concept,
+           COALESCE(fp.label,
+                    billing.fn_format_period_es(c.period_start, c.period_end)) AS period,
+           c.period_start::text AS period_start,
+           c.period_end::text   AS period_end,
+           c.note,
+           c.quantity,
+           COALESCE(c.period_start, c.due_date) AS accrued_on,
+           c.due_date,
+           c.applied_amount,
+           COALESCE(pay.paid, 0)  AS paid,
+           COALESCE(wv.waived, 0) AS waived,
+           c.applied_amount - COALESCE(pay.paid, 0) - COALESCE(wv.waived, 0) AS balance,
+           c.payment_status::text AS payment_status,
+           pay.last_paid_on,
+           COALESCE(pay.payment_count, 0) AS payment_count,
+           wv.last_waived_on,
+           c.created_at
+      FROM billing.charges c
+      JOIN billing.fees f ON f.customer_id = c.customer_id AND f.id = c.fee_id
+      LEFT JOIN billing.fee_periods fp
+        ON fp.customer_id = c.customer_id AND fp.id = c.period_id
+      LEFT JOIN LATERAL (
+        SELECT SUM(pa.amount)       AS paid,
+               -- ::date recorta el instante en la zona de la SESIÓN
+               -- (DB_TIMEZONE), igual que summary, movements y el ledger V1.
+               MAX(p.paid_at::date) AS last_paid_on,
+               count(DISTINCT p.id) AS payment_count
+          FROM billing.payment_allocations pa
+          JOIN billing.payments p
+            ON p.customer_id = pa.customer_id AND p.id = pa.payment_id
+         WHERE pa.charge_id = c.id
+           AND pa.status <> 'deleted'
+           AND p.status  <> 'deleted'
+      ) pay ON true
+      LEFT JOIN LATERAL (
+        SELECT SUM(w.waived_amount)    AS waived,
+               MAX(w.created_at::date) AS last_waived_on
+          FROM billing.waivers w
+         WHERE w.charge_id = c.id AND w.status <> 'deleted'
+      ) wv ON true
+     WHERE c.community_id = $1
+       AND c.unit_id = $2
+       AND c.status = 'active'
+  )
+`;
+
 interface StatementUnitRow {
   id: string;
   code: string;
+}
+
+/**
+ * La unidad del estado de cuenta, resuelta por el SERVIDOR: el contrato la
+ * devuelve para que el PDF no dependa de la lista que el cliente tenga en
+ * memoria. `null` = no existe en esa comunidad para el tenant (o está borrada):
+ * fuera de alcance → 404, indistinguible de inexistente. La unidad INACTIVA sí
+ * responde — dar de baja una unidad no borra su historia, y su estado de cuenta
+ * es justo lo que alguien cerrando cuentas viene a buscar (mismo criterio que
+ * resolveUnitAccess). Las dos versiones del estado de cuenta la resuelven aquí,
+ * de una sola forma.
+ */
+async function selectStatementUnit(
+  tx: TxClient,
+  communityId: string,
+  unitId: string,
+): Promise<{ id: string; code: string } | null> {
+  const result = await tx.query<StatementUnitRow>(
+    `SELECT u.id, u.code
+       FROM community.units u
+      WHERE u.community_id = $1
+        AND u.id = $2
+        AND u.status <> 'deleted'`,
+    [communityId, unitId],
+  );
+  const row = result.rows[0];
+  return row === undefined ? null : { id: row.id, code: row.code };
+}
+
+interface ChargeStatementEntryRow {
+  id: string;
+  concept: string;
+  period: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  note: string | null;
+  quantity: number;
+  accrued_on: string;
+  due_date: string;
+  applied_amount: string;
+  paid: string;
+  waived: string;
+  balance: string;
+  payment_status: string;
+  overdue: boolean;
+  paid_on: string | null;
+  payment_count: string;
+  waived_on: string | null;
+}
+
+interface ChargeStatementTotalsRow {
+  count: string;
+  charged: string;
+  paid: string;
+  waived: string;
+  balance: string;
+  overdue: string;
+  settled: string;
 }
 
 interface StatementTotalsRow {
@@ -1094,18 +1298,8 @@ export const reportsRepository = {
   ): Promise<UnitStatement | null> {
     const { communityId, unitId, from, to } = input;
 
-    // La unidad, resuelta por el servidor: el contrato la devuelve para que el
-    // PDF no dependa de la lista que el cliente tenga en memoria.
-    const unitResult = await tx.query<StatementUnitRow>(
-      `SELECT u.id, u.code
-         FROM community.units u
-        WHERE u.community_id = $1
-          AND u.id = $2
-          AND u.status <> 'deleted'`,
-      [communityId, unitId],
-    );
-    const unit = unitResult.rows[0];
-    if (unit === undefined) {
+    const unit = await selectStatementUnit(tx, communityId, unitId);
+    if (unit === null) {
       return null;
     }
 
@@ -1172,6 +1366,119 @@ export const reportsRepository = {
         paid,
         waived,
         closingBalance: addMoney(openingBalance, charged, -paid, -waived),
+      },
+    };
+  },
+
+  /**
+   * Estado de cuenta V2 de UNA unidad para [from, to]: una fila por CARGO
+   * devengado en el rango, con si ya está pagado, cuándo se pagó y de qué
+   * periodo es.
+   *
+   * Es la consulta de cargos (charges_v1) acotada a una unidad y respondida
+   * hasta el final: el ledger V1 dice que entró dinero un día, pero para saber
+   * si la cuota de marzo quedó cubierta hay que ir casando renglones a mano.
+   * Aquí cada cargo se cierra solo.
+   *
+   * NO hay saldo anterior ni saldo corrido, y no es una omisión: esta vista no
+   * es un libro: no ordena movimientos en el tiempo, sino que audita cargos.
+   * Un saldo corrido sobre filas que ya traen su propio saldo sumaría dos veces
+   * lo mismo. Lo que sí cuadra es el pie: `cargos − pagado − condonado = saldo`.
+   *
+   * Devuelve `null` si la unidad no existe en esa comunidad (→ 404), igual que
+   * la V1.
+   */
+  async unitChargeStatement(
+    tx: TxClient,
+    input: UnitStatementInput,
+  ): Promise<UnitChargeStatement | null> {
+    const { communityId, unitId, from, to } = input;
+
+    const unit = await selectStatementUnit(tx, communityId, unitId);
+    if (unit === null) {
+      return null;
+    }
+
+    const scope = [communityId, unitId, from, to];
+    // El rango acota por DEVENGO, no por fecha de pago: el sujeto de la vista es
+    // el cargo. Un cargo de marzo pagado en agosto pertenece a marzo, y su fila
+    // dice que se pagó en agosto — que es exactamente la pregunta que la V1
+    // obliga a reconstruir.
+    const inRange = `WHERE accrued_on >= $3::date AND accrued_on <= $4::date`;
+
+    const totalsResult = await tx.query<ChargeStatementTotalsRow>(
+      `WITH ${CHARGE_STATEMENT_CTE}
+       SELECT count(*)::bigint                              AS count,
+              COALESCE(SUM(applied_amount), 0)::text        AS charged,
+              COALESCE(SUM(paid), 0)::text                  AS paid,
+              COALESCE(SUM(waived), 0)::text                AS waived,
+              COALESCE(SUM(balance), 0)::text               AS balance,
+              COALESCE(SUM(balance) FILTER (
+                WHERE due_date < CURRENT_DATE AND balance > 0
+              ), 0)::text                                   AS overdue,
+              count(*) FILTER (WHERE balance <= 0)::bigint  AS settled
+         FROM unit_charges
+        ${inRange}`,
+      scope,
+    );
+    const totalsRow = totalsResult.rows[0];
+
+    const itemsResult = await tx.query<ChargeStatementEntryRow>(
+      `WITH ${CHARGE_STATEMENT_CTE}
+       SELECT id, concept, period, period_start, period_end, note, quantity,
+              accrued_on::text        AS accrued_on,
+              due_date::text          AS due_date,
+              applied_amount::text    AS applied_amount,
+              paid::text              AS paid,
+              waived::text            AS waived,
+              balance::text           AS balance,
+              payment_status,
+              -- Derivado SIEMPRE en lectura (residguard_db §04), igual que en
+              -- la consulta de cargos: vencido = pasó su fecha y sigue debiendo.
+              (due_date < CURRENT_DATE AND balance > 0) AS overdue,
+              last_paid_on::text      AS paid_on,
+              payment_count::text     AS payment_count,
+              last_waived_on::text    AS waived_on
+         FROM unit_charges
+        ${inRange}
+        -- Cronológico ASCENDENTE por devengo, como la V1: el estado de cuenta
+        -- se lee del cargo más viejo hacia abajo. created_at e id rompen el
+        -- empate de dos cargos del mismo día (dos ventas sueltas).
+        ORDER BY accrued_on, created_at, id
+        LIMIT $5 OFFSET $6`,
+      [...scope, input.pageSize, (input.page - 1) * input.pageSize],
+    );
+
+    return {
+      unit,
+      items: itemsResult.rows.map((row) => ({
+        id: row.id,
+        concept: row.concept,
+        period: row.period,
+        periodStart: row.period_start,
+        periodEnd: row.period_end,
+        note: row.note,
+        quantity: Number(row.quantity),
+        accruedOn: row.accrued_on,
+        dueDate: row.due_date,
+        appliedAmount: money(row.applied_amount),
+        paid: money(row.paid),
+        waived: money(row.waived),
+        balance: money(row.balance),
+        paymentStatus: row.payment_status,
+        overdue: row.overdue,
+        paidOn: row.paid_on,
+        paymentCount: Number(row.payment_count),
+        waivedOn: row.waived_on,
+      })),
+      total: Number(totalsRow?.count ?? 0),
+      totals: {
+        charged: money(totalsRow?.charged),
+        paid: money(totalsRow?.paid),
+        waived: money(totalsRow?.waived),
+        balance: money(totalsRow?.balance),
+        overdue: money(totalsRow?.overdue),
+        settledCount: Number(totalsRow?.settled ?? 0),
       },
     };
   },

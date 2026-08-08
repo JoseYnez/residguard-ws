@@ -13,6 +13,7 @@ import {
   reportSummaryQueryV1V,
   reportSummaryV1V,
   reportUnitsQueryV1V,
+  unitChargeStatementV1V,
   unitDebtListV1V,
   unitStatementQueryV1V,
   unitStatementV1V,
@@ -130,6 +131,50 @@ export async function reportsV1Routes(instance: FastifyInstance): Promise<void> 
         });
       }
       const statement = await reportsController.unitStatement(req, {
+        communityId: req.params.communityId,
+        unitId: req.params.unitId,
+        from: q.from,
+        to: q.to,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      if (statement === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      const { unit, items, total, totals, timezone } = statement;
+      return reply
+        .code(200)
+        .send({ unit, items, total, page: q.page, pageSize: q.pageSize, timezone, totals });
+    },
+  );
+
+  // Estado de cuenta V2 de UNA unidad: una fila por CARGO devengado en el rango,
+  // con si ya está pagado, cuándo se pagó y de qué periodo es. Mismo permiso,
+  // mismo alcance y mismo rango que la V1 — es la MISMA información leída desde
+  // el cargo en vez de desde el movimiento, y por eso convive con ella en vez de
+  // sustituirla: la V1 explica cómo se movió el saldo, la V2 en qué quedó cada
+  // cargo.
+  app.get(
+    "/communities/:communityId/reports/units/:unitId/statement/charges",
+    {
+      schema: {
+        params: communityUnitParamV1V,
+        querystring: unitStatementQueryV1V,
+        response: { 200: unitChargeStatementV1V, 400: errorResponseV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.reportsRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      // Mismo rechazo que la V1: una lista vacía se lee como "la unidad no
+      // devengó nada", que no es lo que pasó con un rango invertido.
+      if (q.from > q.to) {
+        return reply.code(400).send({
+          error: "invalid",
+          message: "La fecha inicial no puede ser posterior a la final.",
+        });
+      }
+      const statement = await reportsController.unitChargeStatement(req, {
         communityId: req.params.communityId,
         unitId: req.params.unitId,
         from: q.from,
