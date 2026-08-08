@@ -53,6 +53,31 @@ export const reportUnitsQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+// --- Entrada: estado de cuenta por unidad (GET .../reports/units/:unitId/statement)
+// Los dos ids viajan en la ruta: la comunidad es el alcance (requireCommunityAccess)
+// y la unidad, el sujeto del estado de cuenta. No hay verifier común para esta
+// pareja — el recurso units usa /units/:unitId sin comunidad — así que se
+// declara aquí.
+export const communityUnitParamV1V = new V.ObjectNotNull(
+  {
+    communityId: new V.StringNotNull({ regex: UUID_REGEX }),
+    unitId: new V.StringNotNull({ regex: UUID_REGEX }),
+  },
+  { strictMode: true },
+);
+
+// Mismo rango de negocio que el resumen y los movimientos: días `YYYY-MM-DD`
+// recortados en la zona de operación. El saldo anterior se corta al día
+// ANTERIOR a `from`, igual que el saldo inicial de caja.
+export const unitStatementQueryV1V = new V.ObjectNotNull(
+  {
+    ...pageQueryFields(),
+    from: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+    to: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+  },
+  { strictMode: true },
+);
+
 // --- Entrada: movimientos (GET .../reports/movements) --------------------------
 // Mismo rango de negocio y mismo filtro de caja que el resumen: es el DETALLE
 // de sus cifras de caja, así que cualquier divergencia en los parámetros sería
@@ -244,6 +269,66 @@ const movementV1V = new V.ObjectNotNull({
   amount: new V.NumberNotNull(),
   /** Saldo del alcance DESPUÉS de este movimiento. */
   balance: new V.NumberNotNull(),
+});
+
+// --- Salida: estado de cuenta por unidad ---------------------------------------
+
+/**
+ * UN movimiento del estado de cuenta. El importe viaja SIGNADO sobre la DEUDA
+ * de la unidad: + la aumenta (cargo), − la baja (pago aplicado o condonación).
+ * `balance` es el saldo deudor DESPUÉS del movimiento — saldo anterior más la
+ * suma corrida — igual que el saldo acumulado de los movimientos de caja.
+ */
+const statementEntryV1V = new V.ObjectNotNull({
+  /** Id del registro de origen (cargo, pago o condonación). La identidad de la
+   *  fila es (kind, id), como en los movimientos. */
+  id: new V.StringNotNull(),
+  /** charge | payment | waiver. */
+  kind: new V.StringNotNull(),
+  /** Fecha de NEGOCIO: el devengo del cargo (periodo o vencimiento del suelto),
+   *  el día del pago, el día de la condonación. */
+  movedOn: new V.StringNotNull(),
+  /** Qué fue: "Mantenimiento", "Tarjeta de acceso ×2", las cuotas cubiertas. */
+  concept: new V.StringNotNull(),
+  /** Contexto del tipo: el periodo del cargo ("Enero-2026"), la nota del
+   *  suelto, el motivo de la condonación. null cuando no aporta ninguno. */
+  detail: new V.String(),
+  /** billing.payment_method; solo en pagos. */
+  method: new V.String(),
+  reference: new V.String(),
+  /** SIGNADO: + cargo (sube la deuda), − abono (la baja). */
+  amount: new V.NumberNotNull(),
+  /** Saldo deudor de la unidad DESPUÉS de este movimiento. */
+  balance: new V.NumberNotNull(),
+});
+
+export const unitStatementV1V = new V.ObjectNotNull({
+  /** La unidad del estado de cuenta, resuelta por el servidor: el PDF no debe
+   *  depender de la lista de unidades que el cliente tenga en memoria. */
+  unit: new V.ObjectNotNull({
+    id: new V.StringNotNull(),
+    code: new V.StringNotNull(),
+  }),
+  items: new V.ArrayNotNull(statementEntryV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+  /** Zona en la que se recortaron los días (DB_TIMEZONE), como los demás
+   *  reportes: el PDF tiene que poder decir en qué días está expresado. */
+  timezone: new V.StringNotNull(),
+  /** Totales del rango COMPLETO, no de la página. Invariante:
+   *  openingBalance + charged − paid − waived = closingBalance. */
+  totals: new V.ObjectNotNull({
+    /** Deuda de la unidad al día ANTERIOR a `from`. */
+    openingBalance: new V.NumberNotNull(),
+    charged: new V.NumberNotNull(),
+    /** Cubierto con dinero dentro del rango (por fecha de pago). */
+    paid: new V.NumberNotNull(),
+    /** Cubierto con condonaciones dentro del rango. NO es dinero. */
+    waived: new V.NumberNotNull(),
+    /** Deuda al cierre de `to`. */
+    closingBalance: new V.NumberNotNull(),
+  }),
 });
 
 export const movementListV1V = new V.ObjectNotNull({

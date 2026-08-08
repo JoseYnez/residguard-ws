@@ -12,6 +12,8 @@ import {
   type ReportSummary,
   type UnitDebt,
   type UnitDebtTotals,
+  type UnitStatement,
+  type UnitStatementInput,
 } from "./reports_v1.repository";
 
 // Orquestación del recurso reports. Solo lectura: no hay vías sancionadas que
@@ -35,6 +37,28 @@ export const reportsController = {
     input: ListUnitDebtInput,
   ): Promise<{ items: UnitDebt[]; total: number; totals: UnitDebtTotals }> {
     return withTransaction(contextFor(req), (tx) => reportsRepository.unitDebt(tx, input));
+  },
+
+  /**
+   * Estado de cuenta de una unidad. Una sola transacción por el mismo motivo
+   * que los demás: el saldo anterior, los renglones y los totales se validan
+   * entre sí (`anterior + cargos − abonos = final`), y leídos en transacciones
+   * distintas un pago que entrara a la mitad los haría discrepar. `null` =
+   * unidad inexistente o fuera de la comunidad → 404.
+   */
+  async unitStatement(
+    req: FastifyRequest,
+    input: UnitStatementInput,
+  ): Promise<(UnitStatement & { timezone: string }) | null> {
+    const result = await withTransaction(contextFor(req), (tx) =>
+      reportsRepository.unitStatement(tx, input),
+    );
+    if (result === null) {
+      return null;
+    }
+    // La zona viaja con la respuesta, como en los demás reportes: los días del
+    // estado de cuenta son los de la operación, y el PDF tiene que decirlo.
+    return { ...result, timezone: config.dbTimezone };
   },
 
   /**

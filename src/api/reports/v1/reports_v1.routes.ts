@@ -6,6 +6,7 @@ import { requirePermission } from "../../../core/auth/require_permission";
 import { communityIdParamV1V } from "../../common/common_v1.verifier";
 import { reportsController } from "./reports_v1.controller";
 import {
+  communityUnitParamV1V,
   errorResponseV1V,
   movementListV1V,
   reportMovementsQueryV1V,
@@ -13,6 +14,8 @@ import {
   reportSummaryV1V,
   reportUnitsQueryV1V,
   unitDebtListV1V,
+  unitStatementQueryV1V,
+  unitStatementV1V,
 } from "./reports_v1.verifier";
 
 // Recurso reports/v1: los agregados financieros de UNA comunidad. Solo GET —
@@ -98,6 +101,49 @@ export async function reportsV1Routes(instance: FastifyInstance): Promise<void> 
       return reply
         .code(200)
         .send({ items, total, page: q.page, pageSize: q.pageSize, totals, timezone });
+    },
+  );
+
+  // Estado de cuenta de UNA unidad: cargos, pagos y condonaciones intercalados
+  // con saldo corrido, para un rango de días. La unidad viaja en la ruta bajo
+  // su comunidad — el alcance lo da requireCommunityAccess y la pertenencia
+  // unidad→comunidad la resuelve el repositorio (fuera de alcance → 404).
+  app.get(
+    "/communities/:communityId/reports/units/:unitId/statement",
+    {
+      schema: {
+        params: communityUnitParamV1V,
+        querystring: unitStatementQueryV1V,
+        response: { 200: unitStatementV1V, 400: errorResponseV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.reportsRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      // Mismo rechazo que el resumen y los movimientos: un estado de cuenta
+      // vacío se lee como "la unidad no se movió", que no es lo que pasó con
+      // un rango invertido.
+      if (q.from > q.to) {
+        return reply.code(400).send({
+          error: "invalid",
+          message: "La fecha inicial no puede ser posterior a la final.",
+        });
+      }
+      const statement = await reportsController.unitStatement(req, {
+        communityId: req.params.communityId,
+        unitId: req.params.unitId,
+        from: q.from,
+        to: q.to,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      if (statement === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      const { unit, items, total, totals, timezone } = statement;
+      return reply
+        .code(200)
+        .send({ unit, items, total, page: q.page, pageSize: q.pageSize, timezone, totals });
     },
   );
 

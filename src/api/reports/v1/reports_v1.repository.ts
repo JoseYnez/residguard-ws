@@ -229,6 +229,59 @@ export interface ListMovementsInput {
   readonly pageSize: number;
 }
 
+// --- Estado de cuenta por unidad ----------------------------------------------
+
+/** De qué tabla salió el renglón del estado de cuenta. */
+export type StatementEntryKind = "charge" | "payment" | "waiver";
+
+/**
+ * UN movimiento del estado de cuenta de una unidad. El importe viaja SIGNADO
+ * sobre la DEUDA: + la aumenta (cargo), − la baja (pago o condonación) — el
+ * saldo deudor es su suma corrida, igual que el saldo de caja en Movement.
+ */
+export interface StatementEntry {
+  /** Id del registro de origen; la identidad de la fila es (kind, id). */
+  readonly id: string;
+  readonly kind: StatementEntryKind;
+  /** Fecha de NEGOCIO: devengo del cargo, día del pago o de la condonación. */
+  readonly movedOn: string;
+  readonly concept: string;
+  /** Periodo del cargo, nota del suelto o motivo de la condonación. */
+  readonly detail: string | null;
+  /** billing.payment_method; solo en pagos. */
+  readonly method: string | null;
+  readonly reference: string | null;
+  readonly amount: number;
+  /** Saldo deudor DESPUÉS de este movimiento. */
+  readonly balance: number;
+}
+
+export interface StatementTotals {
+  /** Deuda al día ANTERIOR a `from`. */
+  readonly openingBalance: number;
+  readonly charged: number;
+  readonly paid: number;
+  readonly waived: number;
+  /** openingBalance + charged − paid − waived. */
+  readonly closingBalance: number;
+}
+
+export interface UnitStatement {
+  readonly unit: { readonly id: string; readonly code: string };
+  readonly items: StatementEntry[];
+  readonly total: number;
+  readonly totals: StatementTotals;
+}
+
+export interface UnitStatementInput {
+  readonly communityId: string;
+  readonly unitId: string;
+  readonly from: string;
+  readonly to: string;
+  readonly page: number;
+  readonly pageSize: number;
+}
+
 /** Centinela del filtro de caja: solo los movimientos SIN caja declarada. */
 export const CASH_ACCOUNT_NONE = "none";
 
@@ -452,6 +505,113 @@ async function scopeBalances(
     opening: addMoney(opening, -money(row?.accounts_opening)),
     closing: addMoney(closing, -money(row?.accounts_closing)),
   };
+}
+
+/**
+ * Los tres orígenes del estado de cuenta de UNA unidad, ya signados sobre su
+ * DEUDA. `$1` = communityId, `$2` = unitId.
+ *
+ * Mismas reglas que el resto del archivo, aplicadas al sujeto unidad:
+ *
+ * - El cargo se ubica por su DEVENGO — `COALESCE(period_start, due_date)` — y
+ *   el JOIN con `fee_periods` es LEFT (regla 4): un cargo suelto no tiene
+ *   periodo y con un INNER la venta desaparecería del estado de cuenta.
+ * - Los tres lados exigen `c.status = 'active'`: es el criterio de
+ *   `fn_get_charge_balance` (CHARGE_STATE_CTE), así que el saldo final del
+ *   estado de cuenta reproduce el `balance` del adeudo por unidad.
+ * - Un ABONO es la parte del depósito aplicada a cargos de ESTA unidad
+ *   (`payment_allocations.unit_id`, denormalizado), un renglón por depósito —
+ *   la misma unidad de captura que la pantalla de Pagos. No mira el status del
+ *   PAGO más allá de `<> 'deleted'`: anular un pago soft-borra también sus
+ *   aplicaciones (regla 3).
+ * - La CONDONACIÓN baja la deuda pero NO es dinero; viaja como renglón propio
+ *   para que el lector vea por qué el saldo bajó sin que nadie pagara.
+ */
+const STATEMENT_ENTRIES_CTE = `
+  entries AS (
+    SELECT c.id::text AS id, 'charge'::text AS kind,
+           COALESCE(c.period_start, c.due_date) AS moved_on,
+           f.concept || CASE WHEN c.quantity > 1 THEN ' ×' || c.quantity ELSE '' END AS concept,
+           -- El contexto del cargo: su periodo (etiqueta propia o derivada) o,
+           -- en un suelto, la nota de la venta.
+           COALESCE(fp.label,
+                    billing.fn_format_period_es(c.period_start, c.period_end),
+                    c.note) AS detail,
+           NULL::text AS method, NULL::text AS reference,
+           c.applied_amount AS amount,
+           c.created_at
+      FROM billing.charges c
+      JOIN billing.fees f ON f.customer_id = c.customer_id AND f.id = c.fee_id
+      LEFT JOIN billing.fee_periods fp
+        ON fp.customer_id = c.customer_id AND fp.id = c.period_id
+     WHERE c.community_id = $1
+       AND c.unit_id = $2
+       AND c.status = 'active'
+
+    UNION ALL
+
+    SELECT p.id::text, 'payment'::text,
+           -- ::date recorta el instante en la zona de la SESIÓN (DB_TIMEZONE),
+           -- igual que summary y movements.
+           p.paid_at::date,
+           string_agg(DISTINCT f.concept, ', ' ORDER BY f.concept),
+           NULL::text,
+           p.method::text, p.reference,
+           -SUM(pa.amount),
+           p.created_at
+      FROM billing.payment_allocations pa
+      JOIN billing.payments p ON p.customer_id = pa.customer_id AND p.id = pa.payment_id
+      JOIN billing.charges  c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+      JOIN billing.fees     f ON f.customer_id = c.customer_id  AND f.id = c.fee_id
+     WHERE c.community_id = $1
+       AND pa.unit_id = $2
+       AND pa.status <> 'deleted'
+       AND p.status  <> 'deleted'
+       AND c.status   = 'active'
+     GROUP BY p.id, p.paid_at, p.method, p.reference, p.created_at
+
+    UNION ALL
+
+    SELECT w.id::text, 'waiver'::text, w.created_at::date,
+           'Condonación — ' || f.concept,
+           w.reason,
+           NULL::text, NULL::text,
+           -w.waived_amount,
+           w.created_at
+      FROM billing.waivers w
+      JOIN billing.charges c ON c.customer_id = w.customer_id AND c.id = w.charge_id
+      JOIN billing.fees    f ON f.customer_id = c.customer_id AND f.id = c.fee_id
+     WHERE c.community_id = $1
+       AND c.unit_id = $2
+       AND w.status <> 'deleted'
+       AND c.status  = 'active'
+  )
+`;
+
+interface StatementUnitRow {
+  id: string;
+  code: string;
+}
+
+interface StatementTotalsRow {
+  count: string;
+  opening: string;
+  charged: string;
+  paid: string;
+  waived: string;
+}
+
+interface StatementEntryRow {
+  id: string;
+  kind: string;
+  moved_on: string;
+  concept: string;
+  detail: string | null;
+  method: string | null;
+  reference: string | null;
+  amount: string;
+  /** Suma corrida SIN el saldo anterior (se le suma en TS). */
+  running: string;
 }
 
 interface UnitDebtRow {
@@ -907,6 +1067,111 @@ export const reportsRepository = {
         waived: money(totalsRow?.waived),
         balance: money(totalsRow?.balance),
         overdue: money(totalsRow?.overdue),
+      },
+    };
+  },
+
+  /**
+   * Estado de cuenta de UNA unidad para [from, to]: cargos, pagos aplicados y
+   * condonaciones intercalados en orden cronológico, cada uno con el saldo
+   * deudor que dejó, más el saldo anterior al rango y los totales.
+   *
+   * Devuelve `null` si la unidad no existe en esa comunidad para el tenant (o
+   * está borrada): fuera de alcance → 404, indistinguible de inexistente. La
+   * unidad INACTIVA sí responde — dar de baja una unidad no borra su historia,
+   * y su estado de cuenta es justo lo que alguien cerrando cuentas viene a
+   * buscar (mismo criterio que resolveUnitAccess).
+   *
+   * TODO SALE DEL MISMO CTE (STATEMENT_ENTRIES_CTE): el saldo anterior es la
+   * suma de lo previo a `from`, los totales la del rango, y el saldo corrido la
+   * ventana sobre los renglones — así el invariante
+   * `anterior + cargos − pagos − condonado = final` se cumple por construcción
+   * y el saldo final reproduce el `balance` del adeudo por unidad.
+   */
+  async unitStatement(
+    tx: TxClient,
+    input: UnitStatementInput,
+  ): Promise<UnitStatement | null> {
+    const { communityId, unitId, from, to } = input;
+
+    // La unidad, resuelta por el servidor: el contrato la devuelve para que el
+    // PDF no dependa de la lista que el cliente tenga en memoria.
+    const unitResult = await tx.query<StatementUnitRow>(
+      `SELECT u.id, u.code
+         FROM community.units u
+        WHERE u.community_id = $1
+          AND u.id = $2
+          AND u.status <> 'deleted'`,
+      [communityId, unitId],
+    );
+    const unit = unitResult.rows[0];
+    if (unit === undefined) {
+      return null;
+    }
+
+    const scope = [communityId, unitId, from, to];
+
+    const totalsResult = await tx.query<StatementTotalsRow>(
+      `WITH ${STATEMENT_ENTRIES_CTE}
+       SELECT count(*) FILTER (WHERE moved_on >= $3::date AND moved_on <= $4::date)::bigint AS count,
+              COALESCE(SUM(amount) FILTER (WHERE moved_on < $3::date), 0)::text AS opening,
+              COALESCE(SUM(amount) FILTER (
+                WHERE moved_on >= $3::date AND moved_on <= $4::date AND kind = 'charge'
+              ), 0)::text AS charged,
+              COALESCE(SUM(-amount) FILTER (
+                WHERE moved_on >= $3::date AND moved_on <= $4::date AND kind = 'payment'
+              ), 0)::text AS paid,
+              COALESCE(SUM(-amount) FILTER (
+                WHERE moved_on >= $3::date AND moved_on <= $4::date AND kind = 'waiver'
+              ), 0)::text AS waived
+         FROM entries`,
+      scope,
+    );
+    const totalsRow = totalsResult.rows[0];
+    const openingBalance = money(totalsRow?.opening);
+    const charged = money(totalsRow?.charged);
+    const paid = money(totalsRow?.paid);
+    const waived = money(totalsRow?.waived);
+
+    const itemsResult = await tx.query<StatementEntryRow>(
+      `WITH ${STATEMENT_ENTRIES_CTE}
+       SELECT e.id, e.kind, e.moved_on::text AS moved_on, e.concept, e.detail,
+              e.method, e.reference, e.amount::text AS amount,
+              -- Suma corrida en el MISMO orden en que se devuelven las filas;
+              -- el saldo anterior se le suma en TS. La ventana se evalúa antes
+              -- del LIMIT: paginar no la reinicia.
+              SUM(e.amount) OVER (ORDER BY e.moved_on, e.created_at, e.id
+                                  ROWS UNBOUNDED PRECEDING)::text AS running
+         FROM entries e
+        WHERE e.moved_on >= $3::date
+          AND e.moved_on <= $4::date
+        -- Cronológico ASCENDENTE: un estado de cuenta se lee del saldo
+        -- anterior hacia abajo, igual que el libro de caja.
+        ORDER BY e.moved_on, e.created_at, e.id
+        LIMIT $5 OFFSET $6`,
+      [...scope, input.pageSize, (input.page - 1) * input.pageSize],
+    );
+
+    return {
+      unit: { id: unit.id, code: unit.code },
+      items: itemsResult.rows.map((row) => ({
+        id: row.id,
+        kind: row.kind as StatementEntryKind,
+        movedOn: row.moved_on,
+        concept: row.concept,
+        detail: row.detail,
+        method: row.method,
+        reference: row.reference,
+        amount: money(row.amount),
+        balance: addMoney(openingBalance, money(row.running)),
+      })),
+      total: Number(totalsRow?.count ?? 0),
+      totals: {
+        openingBalance,
+        charged,
+        paid,
+        waived,
+        closingBalance: addMoney(openingBalance, charged, -paid, -waived),
       },
     };
   },
