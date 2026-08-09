@@ -329,14 +329,33 @@ export interface ChargeStatementEntry {
   readonly waivedOn: string | null;
 }
 
-/** Totales del rango COMPLETO (no de la página). Invariante por construcción:
- *  `charged − paid − waived = balance`. */
+/**
+ * Totales del rango COMPLETO (no de la página). Dos invariantes por
+ * construcción:
+ *
+ *     charged − paid − waived = balance
+ *     openingBalance + balance = closingBalance
+ *
+ * OJO con los dos saldos: aquí se miden SOBRE EL CARGO, no sobre el
+ * movimiento. El `openingBalance` es lo que sigue debiéndose de lo devengado
+ * ANTES del rango — con todo su historial de pagos aplicado, incluso el que
+ * entró después — y no "la deuda que había ese día", que es lo que responde el
+ * saldo anterior del ledger V1. Un cargo de enero pagado en agosto pesa en el
+ * saldo anterior de la V1 (en agosto todavía no había entrado el dinero) y no
+ * pesa aquí (el cargo acabó saldado). Las dos cifras son correctas y contestan
+ * preguntas distintas: cómo se movió el saldo, y en qué quedó cada cargo.
+ */
 export interface ChargeStatementTotals {
+  /** Saldo pendiente de los cargos devengados ANTES de `from`. */
+  readonly openingBalance: number;
   readonly charged: number;
   readonly paid: number;
   readonly waived: number;
+  /** Pendiente de los cargos DEL RANGO (charged − paid − waived). */
   readonly balance: number;
-  /** Parte del saldo cuyos cargos ya vencieron. */
+  /** Saldo pendiente de todo lo devengado hasta el cierre de `to`. */
+  readonly closingBalance: number;
+  /** Parte del `closingBalance` cuyos cargos ya vencieron. */
   readonly overdue: number;
   /** Cuántos de los cargos del rango ya no deben nada (pagados o condonados). */
   readonly settledCount: number;
@@ -734,6 +753,17 @@ const CHARGE_STATEMENT_CTE = `
   )
 `;
 
+/**
+ * El rango del estado de cuenta V2 acota por DEVENGO, no por fecha de pago: el
+ * sujeto de la vista es el cargo. Un cargo de marzo pagado en agosto pertenece
+ * a marzo, y su fila dice que se pagó en agosto — que es exactamente la
+ * pregunta que la V1 obliga a reconstruir. `$3` = from, `$4` = to.
+ *
+ * Es una CONDICIÓN y no un WHERE porque los totales la usan dentro de FILTER:
+ * los saldos de corte necesitan ver también los cargos de fuera del rango.
+ */
+const IN_RANGE = `accrued_on >= $3::date AND accrued_on <= $4::date`;
+
 interface StatementUnitRow {
   id: string;
   code: string;
@@ -789,10 +819,12 @@ interface ChargeStatementEntryRow {
 
 interface ChargeStatementTotalsRow {
   count: string;
+  opening: string;
   charged: string;
   paid: string;
   waived: string;
   balance: string;
+  closing: string;
   overdue: string;
   settled: string;
 }
@@ -1400,25 +1432,33 @@ export const reportsRepository = {
     }
 
     const scope = [communityId, unitId, from, to];
-    // El rango acota por DEVENGO, no por fecha de pago: el sujeto de la vista es
-    // el cargo. Un cargo de marzo pagado en agosto pertenece a marzo, y su fila
-    // dice que se pagó en agosto — que es exactamente la pregunta que la V1
-    // obliga a reconstruir.
-    const inRange = `WHERE accrued_on >= $3::date AND accrued_on <= $4::date`;
 
+    // SIN WHERE, y a propósito: los saldos de corte necesitan los cargos de
+    // FUERA del rango (el anterior mira lo devengado antes de `from`), así que
+    // el recorte vive en los FILTER de cada agregado. Los dos invariantes salen
+    // por construcción de que balance = applied − paid − waived:
+    //   charged − paid − waived = balance   y   anterior + balance = final.
     const totalsResult = await tx.query<ChargeStatementTotalsRow>(
       `WITH ${CHARGE_STATEMENT_CTE}
-       SELECT count(*)::bigint                              AS count,
-              COALESCE(SUM(applied_amount), 0)::text        AS charged,
-              COALESCE(SUM(paid), 0)::text                  AS paid,
-              COALESCE(SUM(waived), 0)::text                AS waived,
-              COALESCE(SUM(balance), 0)::text               AS balance,
+       SELECT count(*) FILTER (WHERE ${IN_RANGE})::bigint    AS count,
               COALESCE(SUM(balance) FILTER (
-                WHERE due_date < CURRENT_DATE AND balance > 0
-              ), 0)::text                                   AS overdue,
-              count(*) FILTER (WHERE balance <= 0)::bigint  AS settled
-         FROM unit_charges
-        ${inRange}`,
+                WHERE accrued_on < $3::date
+              ), 0)::text                                    AS opening,
+              COALESCE(SUM(applied_amount) FILTER (WHERE ${IN_RANGE}), 0)::text AS charged,
+              COALESCE(SUM(paid)   FILTER (WHERE ${IN_RANGE}), 0)::text         AS paid,
+              COALESCE(SUM(waived) FILTER (WHERE ${IN_RANGE}), 0)::text         AS waived,
+              COALESCE(SUM(balance) FILTER (WHERE ${IN_RANGE}), 0)::text        AS balance,
+              COALESCE(SUM(balance) FILTER (
+                WHERE accrued_on <= $4::date
+              ), 0)::text                                    AS closing,
+              -- Vencido del saldo FINAL, no solo del rango: la tarjeta que lo
+              -- califica es la del saldo final, y medirlo sobre otro conjunto
+              -- haría que su nota hablara de otra cifra.
+              COALESCE(SUM(balance) FILTER (
+                WHERE accrued_on <= $4::date AND due_date < CURRENT_DATE AND balance > 0
+              ), 0)::text                                    AS overdue,
+              count(*) FILTER (WHERE ${IN_RANGE} AND balance <= 0)::bigint AS settled
+         FROM unit_charges`,
       scope,
     );
     const totalsRow = totalsResult.rows[0];
@@ -1440,7 +1480,7 @@ export const reportsRepository = {
               payment_count::text     AS payment_count,
               last_waived_on::text    AS waived_on
          FROM unit_charges
-        ${inRange}
+        WHERE ${IN_RANGE}
         -- Cronológico ASCENDENTE por devengo, como la V1: el estado de cuenta
         -- se lee del cargo más viejo hacia abajo. created_at e id rompen el
         -- empate de dos cargos del mismo día (dos ventas sueltas).
@@ -1473,10 +1513,12 @@ export const reportsRepository = {
       })),
       total: Number(totalsRow?.count ?? 0),
       totals: {
+        openingBalance: money(totalsRow?.opening),
         charged: money(totalsRow?.charged),
         paid: money(totalsRow?.paid),
         waived: money(totalsRow?.waived),
         balance: money(totalsRow?.balance),
+        closingBalance: money(totalsRow?.closing),
         overdue: money(totalsRow?.overdue),
         settledCount: Number(totalsRow?.settled ?? 0),
       },

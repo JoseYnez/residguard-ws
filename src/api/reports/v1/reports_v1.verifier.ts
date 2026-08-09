@@ -386,14 +386,22 @@ export const unitChargeStatementV1V = new V.ObjectNotNull({
   /** Zona en la que se recortaron los días (DB_TIMEZONE), como los demás
    *  reportes. */
   timezone: new V.StringNotNull(),
-  /** Totales del rango COMPLETO, no de la página. Invariante:
-   *  charged − paid − waived = balance. */
+  /** Totales del rango COMPLETO, no de la página. Dos invariantes:
+   *  `charged − paid − waived = balance` y
+   *  `openingBalance + balance = closingBalance`. */
   totals: new V.ObjectNotNull({
+    /** Pendiente de lo devengado ANTES de `from`. Medido sobre el CARGO (con
+     *  todos sus pagos aplicados, incluso los posteriores), no sobre la deuda
+     *  que había ese día — que es lo que responde el saldo anterior de la V1. */
+    openingBalance: new V.NumberNotNull(),
     charged: new V.NumberNotNull(),
     paid: new V.NumberNotNull(),
     waived: new V.NumberNotNull(),
+    /** Pendiente de los cargos DEL RANGO. */
     balance: new V.NumberNotNull(),
-    /** Parte del saldo cuyos cargos ya vencieron. */
+    /** Pendiente de todo lo devengado hasta el cierre de `to`. */
+    closingBalance: new V.NumberNotNull(),
+    /** Parte del `closingBalance` cuyos cargos ya vencieron. */
     overdue: new V.NumberNotNull(),
     /** Cuántos cargos del rango ya no deben nada. */
     settledCount: new V.NumberNotNull(),
