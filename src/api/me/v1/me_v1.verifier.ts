@@ -36,3 +36,13 @@ export const myUnitListV1V = new V.ObjectNotNull({
 // (unitChargeStatementV1V): misma fila por cargo, mismos totales — es la misma
 // información con otra frontera de autorización.
 export { errorResponseV1V, unitChargeStatementV1V, unitStatementQueryV1V };
+
+// Las visitas reusan el contrato del dominio access por la misma razón: el pase
+// que ve el residente y el que ve la caseta son el MISMO objeto. Dos contratos
+// separados divergirían con el primer campo nuevo.
+export {
+  createVisitV1V,
+  listMyVisitsQueryV1V,
+  visitListV1V,
+  visitV1V,
+} from "../../visits/v1/visits_v1.verifier";

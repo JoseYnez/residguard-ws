@@ -57,6 +57,24 @@ const envV = new V.ObjectNotNull({
         minLength: 1,
         maxLength: 64,
     }),
+    // Tope de vigencia (días) de un pase de visita. Existe para que no queden
+    // pases eternos que nadie recuerda haber creado: un recurrente de servicio
+    // se renueva, no se emite "para siempre". La BD no lo conoce — es política
+    // de negocio, no integridad.
+    VISIT_MAX_VALIDITY_DAYS: new V.NumberNotNull({
+        defaultValue: 180,
+        min: 1,
+        max: 3650,
+        maxDecimalPlaces: 0,
+    }),
+    // Tope de pases VIGENTES por unidad (freno anti-abuso del portal: una
+    // unidad no necesita cientos de códigos vivos a la vez).
+    VISIT_MAX_ACTIVE_PER_UNIT: new V.NumberNotNull({
+        defaultValue: 100,
+        min: 1,
+        max: 10000,
+        maxDecimalPlaces: 0,
+    }),
     PORT: new V.NumberNotNull({ defaultValue: 3003, min: 1, max: 65535 }),
     HOST: new V.StringNotNull({ defaultValue: "0.0.0.0" }),
     LOG_LEVEL: new V.StringNotNull({
@@ -104,6 +122,8 @@ export const config = {
         .map((o) => o.trim())
         .filter((o) => o.length > 0),
     dbTimezone: env.DB_TIMEZONE,
+    visitMaxValidityDays: env.VISIT_MAX_VALIDITY_DAYS,
+    visitMaxActivePerUnit: env.VISIT_MAX_ACTIVE_PER_UNIT,
     port: env.PORT,
     host: env.HOST,
     logLevel: env.LOG_LEVEL,

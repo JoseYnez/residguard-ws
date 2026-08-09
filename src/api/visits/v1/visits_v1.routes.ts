@@ -1,0 +1,169 @@
+import type { FastifyInstance } from "fastify";
+import type { StructureVerifierTypeProvider } from "structure-verifier/fastify";
+import { config } from "../../../config";
+import { requireCommunityAccess } from "../../../core/auth/community_access";
+import { PERMISSIONS } from "../../../core/auth/permissions";
+import { requirePermission } from "../../../core/auth/require_permission";
+import {
+    communityIdParamV1V,
+    communityScopedIdParamV1V,
+} from "../../common/common_v1.verifier";
+import { visitsController } from "./visits_v1.controller";
+import {
+    checkInVisitV1V,
+    errorResponseV1V,
+    listVisitsQueryV1V,
+    visitCodeParamV1V,
+    visitDetailV1V,
+    visitListV1V,
+    visitVerdictV1V,
+} from "./visits_v1.verifier";
+
+// Recurso visits/v1: el lado de la OPERACIÓN del registro previo de visitas —
+// la bitácora de la comunidad y la caseta. Alcance por comunidad
+// (requireCommunityAccess), a diferencia de /me/visits, que resuelve la
+// pertenencia por el vínculo del padrón.
+//
+// SIN alta: en esta versión el pase nace SOLO del residente (por eso no existe
+// `visits.create` en el catálogo). El operador consulta; el vigilante abre.
+//
+// LA CASETA SON DOS PASOS, a propósito:
+//   GET  .../visits/by-code/:code   resuelve y da el veredicto — NO consume
+//   POST .../visits/:id/entries     registra la entrada
+// Fundirlos en uno haría que un escaneo accidental gastara una entrada del
+// pase, y le quitaría al guardia la pantalla de confirmación que necesita para
+// cotejar a quién espera la unidad.
+
+export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
+    const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
+
+    // Bitácora de pases de la comunidad (paginada).
+    app.get(
+        "/communities/:communityId/visits",
+        {
+            schema: {
+                params: communityIdParamV1V,
+                querystring: listVisitsQueryV1V,
+                response: { 200: visitListV1V, 404: errorResponseV1V },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsRead), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const q = req.query;
+            const { items, total } = await visitsController.list(req, {
+                communityId: req.params.communityId,
+                page: q.page,
+                pageSize: q.pageSize,
+                unitId: q.unitId ?? null,
+                search: q.search ?? null,
+                state: q.state ?? null,
+                visitType: q.visitType ?? null,
+            });
+            return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
+        },
+    );
+
+    // Detalle de un pase + su bitácora de entradas y salidas.
+    app.get(
+        "/communities/:communityId/visits/:id",
+        {
+            schema: {
+                params: communityScopedIdParamV1V,
+                response: { 200: visitDetailV1V, 404: errorResponseV1V },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsRead), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const found = await visitsController.getById(
+                req,
+                req.params.communityId,
+                req.params.id,
+            );
+            if (found === null) {
+                return reply.code(404).send({ error: "not_found", message: null });
+            }
+            return reply.code(200).send(found);
+        },
+    );
+
+    // Caseta, paso 1: resolver el código. NO consume nada.
+    //
+    // Un pase cancelado, vencido o fuera de horario responde 200 con
+    // `valid: false` y su razón — el guardia tiene que poder explicarle al
+    // visitante qué pasó, y un 404 lo dejaría adivinando. Solo el código que no
+    // existe en esta comunidad es 404.
+    app.get(
+        "/communities/:communityId/visits/by-code/:code",
+        {
+            schema: {
+                params: visitCodeParamV1V,
+                response: { 200: visitVerdictV1V, 404: errorResponseV1V },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsRead), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const found = await visitsController.findByCode(
+                req,
+                req.params.communityId,
+                req.params.code,
+            );
+            if (found === null) {
+                return reply.code(404).send({ error: "not_found", message: null });
+            }
+            return reply.code(200).send({
+                visit: found.visit,
+                valid: found.verdict === "ok",
+                reason: found.verdict,
+                timezone: config.dbTimezone,
+            });
+        },
+    );
+
+    // Caseta, paso 2: registrar la entrada.
+    //
+    // El servidor RE-VALIDA con el pase bloqueado y nunca confía en el veredicto
+    // que el guardia vio en pantalla: entre la consulta y el toque al botón el
+    // residente pudo cancelar. Si ya no procede → 409 con la razón (el actor ve
+    // el pase, pero no puede consumirlo ahora).
+    app.post(
+        "/communities/:communityId/visits/:id/entries",
+        {
+            schema: {
+                params: communityScopedIdParamV1V,
+                body: checkInVisitV1V,
+                response: {
+                    201: visitVerdictV1V,
+                    404: errorResponseV1V,
+                    409: visitVerdictV1V,
+                },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsCheckin), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const b = req.body;
+            const result = await visitsController.checkIn(
+                req,
+                req.params.communityId,
+                req.params.id,
+                {
+                    visitorName: b.visitorName ?? null,
+                    visitorDocument: b.visitorDocument ?? null,
+                    companions: b.companions ?? null,
+                    vehiclePlate: b.vehiclePlate ?? null,
+                    gate: b.gate ?? null,
+                    notes: b.notes ?? null,
+                },
+            );
+            if (result === null) {
+                return reply.code(404).send({ error: "not_found", message: null });
+            }
+            const payload = {
+                visit: result.visit,
+                valid: result.verdict === "ok",
+                reason: result.verdict,
+                timezone: config.dbTimezone,
+            };
+            return reply.code(result.verdict === "ok" ? 201 : 409).send(payload);
+        },
+    );
+}

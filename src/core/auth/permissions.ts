@@ -163,6 +163,30 @@ export const PERMISSIONS = {
     // Sembrados por admin_project/db/99_patch_residguard_self_service.sql.
     selfUnitsRead: "self_units.read",
     selfStatementRead: "self_statement.read",
+
+    // Registro previo de visitas del residente (rutas /me/visits). Mismo
+    // alcance que el resto de /me/*: la cadena del padrón. `.update` autoriza
+    // CANCELAR — la baja es lógica y se autoriza con `.update`, como manda la
+    // convención; no hay edición de un pase (se cancela y se registra otro,
+    // igual que un pago).
+    selfVisitsRead: "self_visits.read",
+    selfVisitsCreate: "self_visits.create",
+    selfVisitsUpdate: "self_visits.update",
+
+    // --- Visitas del lado de la OPERACIÓN (bitácora y caseta) ---------------
+    // `visits.read` cubre la bitácora de la comunidad Y resolver un código en
+    // caseta: consultar un pase no es abrir la puerta, y separarlo permite que
+    // un lector de junta vea el registro sin poder dejar entrar a nadie.
+    //
+    // Registrar la entrada es `execute` y no `create` por la misma razón que
+    // `payments.revoke`: es una vía sancionada —revalida vigencia, ventana
+    // horaria, días y tope de entradas con el pase BLOQUEADO— y no el alta de
+    // un registro cualquiera.
+    //
+    // NO existe `visits.create`: en esta versión el pase nace SOLO del
+    // residente (decisión del usuario). El operador consulta y valida.
+    visitsRead: "visits.read",
+    visitsCheckin: "visits.checkin",
 } as const;
 
 /** Unión de todos los códigos FUNCIONALES del catálogo. El guard solo acepta
@@ -207,6 +231,9 @@ export const SCREEN_PERMISSIONS = {
     movements: "screens.movements",
     myUnits: "screens.my_units",
     myStatement: "screens.my_statement",
+    myVisits: "screens.my_visits",
+    visits: "screens.visits",
+    gate: "screens.gate",
 } as const;
 
 /** Unión de los códigos de pantalla. Ningún guard de este servicio los acepta. */

@@ -3,13 +3,17 @@ import type { StructureVerifierTypeProvider } from "structure-verifier/fastify";
 import { config } from "../../../config";
 import { PERMISSIONS } from "../../../core/auth/permissions";
 import { requirePermission } from "../../../core/auth/require_permission";
-import { unitIdParamV1V } from "../../common/common_v1.verifier";
+import { idParamV1V, unitIdParamV1V } from "../../common/common_v1.verifier";
 import { meController } from "./me_v1.controller";
 import {
+  createVisitV1V,
   errorResponseV1V,
+  listMyVisitsQueryV1V,
   myUnitListV1V,
   unitChargeStatementV1V,
   unitStatementQueryV1V,
+  visitListV1V,
+  visitV1V,
 } from "./me_v1.verifier";
 
 // Recurso me/v1: la AUTOCONSULTA del residente — sus unidades y su estado de
@@ -89,6 +93,125 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         timezone: config.dbTimezone,
         totals,
       });
+    },
+  );
+
+  // --- Mis visitas -----------------------------------------------------------
+  // El registro previo de visitas del residente. La comunidad NUNCA viaja en la
+  // ruta ni en el cuerpo: se deriva de la unidad, y la unidad se valida contra
+  // la cadena del padrón. Un residente no conoce el id de su comunidad y no
+  // tiene por qué.
+
+  // Mis pases (paginado, a diferencia de /me/units: las visitas se acumulan).
+  app.get(
+    "/me/visits",
+    {
+      schema: {
+        querystring: listMyVisitsQueryV1V,
+        response: { 200: visitListV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfVisitsRead)],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const { items, total } = await meController.listMyVisits(req, {
+        page: q.page,
+        pageSize: q.pageSize,
+        unitId: q.unitId ?? null,
+        state: q.state ?? null,
+      });
+      return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
+  // Un pase mío (la pantalla del QR entra por aquí al recargar).
+  app.get(
+    "/me/visits/:id",
+    {
+      schema: {
+        params: idParamV1V,
+        response: { 200: visitV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfVisitsRead)],
+    },
+    async (req, reply) => {
+      const visit = await meController.myVisit(req, req.params.id);
+      if (visit === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(visit);
+    },
+  );
+
+  // Registrar una visita. El código llega en la respuesta: es lo que el
+  // residente comparte, y no hay segunda oportunidad de pedirlo (bueno, sí: el
+  // GET de arriba — el código NO es de un solo uso ni se oculta después).
+  app.post(
+    "/me/visits",
+    {
+      schema: {
+        body: createVisitV1V,
+        response: {
+          201: visitV1V,
+          400: errorResponseV1V,
+          404: errorResponseV1V,
+          409: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfVisitsCreate)],
+    },
+    async (req, reply) => {
+      const b = req.body;
+      const result = await meController.createMyVisit(req, {
+        unitId: b.unitId,
+        visitType: b.visitType ?? null,
+        scheduleType: b.scheduleType ?? null,
+        visitorName: b.visitorName,
+        visitorCompany: b.visitorCompany ?? null,
+        visitorPhone: b.visitorPhone ?? null,
+        vehiclePlate: b.vehiclePlate ?? null,
+        companions: b.companions ?? null,
+        validFrom: b.validFrom,
+        validTo: b.validTo ?? null,
+        timeFrom: b.timeFrom ?? null,
+        timeTo: b.timeTo ?? null,
+        weekdays: b.weekdays ?? null,
+        maxEntries: b.maxEntries ?? null,
+        requiresId: b.requiresId ?? null,
+        notes: b.notes ?? null,
+      });
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        const status = result.error.kind === "conflict" ? 409 : 400;
+        return reply.code(status).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(201).send(result.value);
+    },
+  );
+
+  // Cancelar un pase mío. Baja lógica → se autoriza con `.update`.
+  //
+  // Devuelve el pase (no 204) porque el cliente pinta el estado resultante, y
+  // el pase CANCELADO sigue existiendo a propósito: la caseta tiene que poder
+  // decir "cancelado" en vez de "no existe" cuando alguien llegue con el QR ya
+  // compartido.
+  app.delete(
+    "/me/visits/:id",
+    {
+      schema: {
+        params: idParamV1V,
+        response: { 200: visitV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfVisitsUpdate)],
+    },
+    async (req, reply) => {
+      const cancelled = await meController.cancelMyVisit(req, req.params.id);
+      if (cancelled === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(cancelled);
     },
   );
 }

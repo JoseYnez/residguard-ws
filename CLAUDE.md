@@ -45,7 +45,8 @@ residguard_ws/
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
 │   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
-│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement): alcance por vínculo del padrón, no por community_members
+│   │   ├── visits/v1/               ← registro previo de visitas, lado OPERACIÓN: bitácora de la comunidad, consulta de un código en caseta y check-in
+│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/visits): alcance por vínculo del padrón, no por community_members
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -95,7 +96,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (41 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (46 en total). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke`, `charges.revoke`, `waivers.create` y
@@ -136,6 +137,14 @@ responsabilidad por archivo que en `admin_ws`.
      anidada, así que el alcance lo valida el controller: consultar y anular se
      miden contra `p.community_id`; **registrar** se valida cargo por cargo,
      porque la comunidad del depósito no existe hasta que la sp la deriva.
+   - **Visitas: dos superficies, dos fronteras, un solo núcleo.** `visits/v1`
+     (bitácora y caseta) va anidado bajo `/communities/:communityId` con
+     `requireCommunityAccess()`; `/me/visits` resuelve la pertenencia por la
+     cadena del padrón (`sub → members.user_id → unit_members → units`) y ni
+     siquiera admite `communityId` en el cuerpo: la comunidad se DERIVA de la
+     unidad. Las dos comparten `visits_v1.repository` —proyección, estado
+     derivado y veredicto— porque una segunda implementación del "¿puede
+     pasar?" acabaría contradiciendo a la primera.
 6. Recurso fuera del alcance → **404**, indistinguible de inexistente.
    El **primer** miembro de una comunidad lo crea `POST /communities` en la
    misma transacción (el actor queda como miembro de lo que acaba de crear);
@@ -239,7 +248,9 @@ número JSON (NUMERIC(14,2) en BD).
 | `PERMISSIONS_STALE_GRACE_MINUTES` | Gracia de permisos cacheados si `auth_ws` cae — default 15, `0` = fallar cerrado |
 | `RESIDGUARD_APP_CODE` | appCode de ResidGuard (ancla de autorización) — default `residguard-app` |
 | `CORS_ORIGINS` | Lista blanca separada por comas (SPA dev: `http://localhost:4204`) |
-| `DB_TIMEZONE` | Zona de operación fijada en cada sesión de PG — default `America/Mexico_City`. Solo afecta el recorte a día (`::date`, `CURRENT_DATE`, cortes de saldo), no el instante almacenado |
+| `DB_TIMEZONE` | Zona de operación fijada en cada sesión de PG — default `America/Mexico_City`. Solo afecta el recorte a día (`::date`, `CURRENT_DATE`, cortes de saldo), no el instante almacenado. También decide qué día y qué hora se comparan contra la vigencia de un pase de visita |
+| `VISIT_MAX_VALIDITY_DAYS` | Tope de vigencia de un pase de visita — default 180. Política de negocio, no integridad: la BD no lo conoce |
+| `VISIT_MAX_ACTIVE_PER_UNIT` | Tope de pases vigentes por unidad — default 100. Freno anti-abuso del portal |
 | `PORT` / `HOST` | Servicio (default 3003) |
 | `LOG_LEVEL` | pino |
 
