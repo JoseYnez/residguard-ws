@@ -6,6 +6,20 @@ import { Verifiers as V } from "structure-verifier";
 const envV = new V.ObjectNotNull({
     DATABASE_URL: new V.StringNotNull({ minLength: 1 }),
     AUTH_WS_BASE_URL: new V.StringNotNull({ minLength: 1 }),
+    // Base de admin_ws (sin barra final): la SUPERFICIE TENANT `/tenant/v1` con
+    // la que este servicio invita usuarios del cliente (decisión #23 de
+    // admin_project). Distinta de AUTH_WS_BASE_URL: auth_ws emite/valida
+    // sesiones; admin_ws administra identidades. Las llamadas viajan con el
+    // access token del usuario final — no hay credencial de servicio.
+    ADMIN_WS_BASE_URL: new V.StringNotNull({ minLength: 1 }),
+    // Código del rol (auth.roles.code) que se asigna al invitar a una persona
+    // del padrón. Debe existir como rol asignable de residguard-app en la
+    // plataforma (sembrado por 99_patch_residguard_resident_role.sql).
+    RESIDENT_ROLE_CODE: new V.StringNotNull({
+        defaultValue: "community_resident",
+        minLength: 1,
+        maxLength: 64,
+    }),
     // appCode de ResidGuard en el catálogo de la plataforma (core.apps.code del
     // sistema de auth). Es el ancla de autorización del resource server: un
     // access token solo se acepta si su clave de firma (JWK del JWKS) pertenece
@@ -71,9 +85,19 @@ if (isProd && !env.AUTH_WS_BASE_URL.startsWith("https://")) {
     process.exit(1);
 }
 
+// A admin_ws viaja el access token del usuario: por HTTP plano un on-path se lo
+// queda (y con él, la superficie tenant completa de ese usuario).
+if (isProd && !env.ADMIN_WS_BASE_URL.startsWith("https://")) {
+    // eslint-disable-next-line no-console
+    console.error("En producción ADMIN_WS_BASE_URL debe usar https://");
+    process.exit(1);
+}
+
 export const config = {
     databaseUrl: env.DATABASE_URL,
     authWsBaseUrl: env.AUTH_WS_BASE_URL,
+    adminWsBaseUrl: env.ADMIN_WS_BASE_URL.replace(/\/+$/u, ""),
+    residentRoleCode: env.RESIDENT_ROLE_CODE,
     residguardAppCode: env.RESIDGUARD_APP_CODE,
     permissionsStaleGraceMs: env.PERMISSIONS_STALE_GRACE_MINUTES * 60_000,
     corsOrigins: env.CORS_ORIGINS.split(",")

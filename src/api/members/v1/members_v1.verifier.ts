@@ -67,6 +67,16 @@ export const memberPhoneV1V = new V.ObjectNotNull({
   createdAt: new V.StringNotNull(),
 });
 
+// --- Salida: vínculo persona↔usuario (GET .../members/:memberId/user) --------
+// El userId sale de la fila local; email e invitationPending los informa la
+// plataforma (admin_ws) en el momento — null cuando no hay vínculo o cuando la
+// plataforma no pudo responder por ese usuario.
+export const memberUserLinkV1V = new V.ObjectNotNull({
+  userId: new V.String(),
+  email: new V.String(),
+  invitationPending: new V.Boolean(),
+});
+
 // Campos comunes de la persona; el listado deriva phone/unitCodes y el
 // detalle agrega la lista completa de teléfonos.
 const memberFields = {

@@ -5,11 +5,13 @@ import type { TxClient } from "../../../core/db/with_transaction";
 // (requireCommunityAccess) y el RLS filtra el tenant. Sin DELETE físico: baja =
 // status='deleted'.
 //
-// `userId` se expone en la salida pero NO se acepta como entrada: hoy toda fila
-// nace con user_id NULL. Vincular a un usuario registrado exige que el espejo
-// core.users esté poblado (sincronización de identidad, aún inexistente), y
-// además es una decisión distinta de registrar a la persona — cuando llegue,
-// será su propio endpoint.
+// `userId` se expone en la salida pero NO se acepta como entrada: toda fila
+// nace con user_id NULL y el vínculo se fija únicamente por el flujo de
+// invitación (POST .../members/:memberId/invitation): la plataforma responde el
+// userId (creado o existente), `linkUser` siembra el espejo core.users en la
+// misma transacción y fija members.user_id. No hay servicio de sincronización
+// de identidad aparte — el espejo se puebla cuando un usuario se vuelve
+// relevante para ResidGuard, es decir, aquí.
 //
 // Tampoco hay `memberType`: el rol (owner/tenant/resident) califica a la
 // RELACIÓN persona↔unidad —alguien es propietario de una unidad y arrendatario
@@ -308,6 +310,78 @@ export const membersRepository = {
       `UPDATE community.unit_members SET status = 'deleted'
         WHERE member_id = $1 AND status != 'deleted'`,
       [id],
+    );
+    return true;
+  },
+
+  // --- Vínculo persona↔usuario (members.user_id + espejo core.users) ---------
+
+  /**
+   * Vincula la persona al usuario de plataforma. Dos pasos en la MISMA
+   * transacción:
+   *
+   *   1. Upsert del espejo core.users — sin fila ahí la FK compuesta
+   *      fk_members_users rechazaría el vínculo. El espejo lleva UNA FILA POR
+   *      TENANT del mismo usuario global (PK compuesta customer_id+id): la
+   *      misma persona puede pertenecer a dos clientes de ResidGuard, y cada
+   *      tenant siembra y refresca la suya.
+   *   2. members.user_id, solo si estaba sin vincular.
+   *
+   * Puede lanzar 23505 (uq_members_customer_community_user: ese usuario ya está
+   * vinculado a otra persona de la comunidad; o uq_users_customer_email: otro
+   * usuario del tenant ya usa ese email en el espejo) o 23503 (fk_members_users).
+   */
+  async linkUser(
+    tx: TxClient,
+    customerId: string,
+    communityId: string,
+    memberId: string,
+    user: { readonly id: string; readonly fullName: string; readonly email: string },
+  ): Promise<"linked" | "not-found" | "linked-to-other"> {
+    await tx.query(
+      `INSERT INTO core.users (id, customer_id, full_name, email)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (customer_id, id) DO UPDATE
+          SET full_name = EXCLUDED.full_name,
+              email     = EXCLUDED.email,
+              status    = 'active'`,
+      [user.id, customerId, user.fullName, user.email],
+    );
+
+    const result = await tx.query(
+      `UPDATE community.members SET user_id = $1
+        WHERE id = $2 AND community_id = $3 AND status != 'deleted' AND user_id IS NULL`,
+      [user.id, memberId, communityId],
+    );
+    if ((result.rowCount ?? 0) > 0) {
+      return "linked";
+    }
+
+    // 0 filas: o la persona no existe, o ya estaba vinculada. Reintentar la
+    // MISMA invitación es idempotente (mismo userId → "linked").
+    const current = await tx.query<{ user_id: string | null }>(
+      `SELECT user_id FROM community.members
+        WHERE id = $1 AND community_id = $2 AND status != 'deleted'`,
+      [memberId, communityId],
+    );
+    const row = current.rows[0];
+    if (row === undefined) {
+      return "not-found";
+    }
+    return row.user_id === user.id ? "linked" : "linked-to-other";
+  },
+
+  /** Quita el vínculo (user_id = NULL). NO toca la cuenta de plataforma ni sus
+   *  accesos: eso se administra en admin_ws. false si la persona no existe. */
+  async unlinkUser(tx: TxClient, communityId: string, memberId: string): Promise<boolean> {
+    const exists = await this.exists(tx, communityId, memberId);
+    if (!exists) {
+      return false;
+    }
+    await tx.query(
+      `UPDATE community.members SET user_id = NULL
+        WHERE id = $1 AND community_id = $2 AND status != 'deleted' AND user_id IS NOT NULL`,
+      [memberId, communityId],
     );
     return true;
   },

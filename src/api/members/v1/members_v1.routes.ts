@@ -19,6 +19,7 @@ import {
   memberDetailV1V,
   memberListV1V,
   memberPhoneV1V,
+  memberUserLinkV1V,
   updateMemberV1V,
 } from "./members_v1.verifier";
 
@@ -183,6 +184,158 @@ export async function membersV1Routes(instance: FastifyInstance): Promise<void> 
         req.params.id,
       );
       if (!deleted) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  // --- Vínculo persona↔usuario (invitación vía plataforma) -------------------
+  // Los permisos aquí son los del catálogo RESERVADO `platform_*` (decisión #23
+  // de admin_project): administrar usuarios del cliente es una atribución de
+  // plataforma, no del padrón — alguien puede llevar el padrón (members.*) sin
+  // poder invitar cuentas. admin_ws re-aplica el mismo permiso sobre el mismo
+  // token en cada llamada; el guard local solo da el 403 barato.
+
+  // Estado del vínculo (¿tiene usuario? ¿canjeó su invitación?)
+  app.get(
+    "/communities/:communityId/members/:memberId/user",
+    {
+      schema: {
+        params: communityMemberParamV1V,
+        response: {
+          200: memberUserLinkV1V,
+          400: errorResponseV1V,
+          401: errorResponseV1V,
+          403: errorResponseV1V,
+          404: errorResponseV1V,
+          409: errorResponseV1V,
+          429: errorResponseV1V,
+          502: errorResponseV1V,
+          503: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.platformUsersRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const result = await membersController.getUserLink(
+        req,
+        req.params.communityId,
+        req.params.memberId,
+      );
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        return reply
+          .code(result.error.status)
+          .send({ error: result.error.error, message: result.error.message });
+      }
+      return reply.code(200).send(result.value);
+    },
+  );
+
+  // Invitar a la persona como usuario (y vincularla). El correo, el token y el
+  // flujo de activación (contraseña + 2FA) los resuelve la plataforma.
+  app.post(
+    "/communities/:communityId/members/:memberId/invitation",
+    {
+      schema: {
+        params: communityMemberParamV1V,
+        response: {
+          201: memberDetailV1V,
+          400: errorResponseV1V,
+          401: errorResponseV1V,
+          403: errorResponseV1V,
+          404: errorResponseV1V,
+          409: errorResponseV1V,
+          429: errorResponseV1V,
+          502: errorResponseV1V,
+          503: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.platformUsersInvite), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const result = await membersController.invite(
+        req,
+        req.params.communityId,
+        req.params.memberId,
+      );
+      if (!result.ok) {
+        return reply
+          .code(result.error.status)
+          .send({ error: result.error.error, message: result.error.message });
+      }
+      return reply.code(201).send(result.value);
+    },
+  );
+
+  // Reenviar el correo de invitación (uniforme: no revela si ya activó).
+  app.post(
+    "/communities/:communityId/members/:memberId/invitation/resend",
+    {
+      schema: { params: communityMemberParamV1V },
+      preHandler: [requirePermission(PERMISSIONS.platformUsersInvite), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const result = await membersController.resendInvitation(
+        req,
+        req.params.communityId,
+        req.params.memberId,
+      );
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        return reply
+          .code(result.error.status)
+          .send({ error: result.error.error, message: result.error.message });
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  // Anular la invitación viva (enviada por error). No desvincula.
+  app.post(
+    "/communities/:communityId/members/:memberId/invitation/cancel",
+    {
+      schema: { params: communityMemberParamV1V },
+      preHandler: [requirePermission(PERMISSIONS.platformUsersInvite), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const result = await membersController.cancelInvitation(
+        req,
+        req.params.communityId,
+        req.params.memberId,
+      );
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        return reply
+          .code(result.error.status)
+          .send({ error: result.error.error, message: result.error.message });
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  // Desvincular (user_id = NULL). La cuenta y sus accesos quedan intactos:
+  // quitar el acceso a la app es cosa de la plataforma, no del padrón.
+  app.delete(
+    "/communities/:communityId/members/:memberId/user",
+    {
+      schema: { params: communityMemberParamV1V },
+      preHandler: [requirePermission(PERMISSIONS.platformUsersInvite), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const done = await membersController.unlinkUser(
+        req,
+        req.params.communityId,
+        req.params.memberId,
+      );
+      if (!done) {
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(204).send();

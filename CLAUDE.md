@@ -33,7 +33,7 @@ residguard_ws/
 │   │   ├── common/                  ← verifiers compartidos (params, paginación, error)
 │   │   ├── communities/v1/          ← comunidades accesibles (CRUD) + saldo
 │   │   ├── community-members/v1/    ← relación usuario↔comunidad (visibilidad), bajo /access
-│   │   ├── members/v1/              ← padrón de personas de la comunidad (CRUD), user_id siempre NULL
+│   │   ├── members/v1/              ← padrón de personas (CRUD) + invitación/vínculo a usuario de plataforma
 │   │   ├── units/v1/                ← unidades (CRUD)
 │   │   ├── unit-members/v1/         ← personas↔unidad (CRUD)
 │   │   ├── fees/v1/                 ← cuotas por comunidad (CRUD)
@@ -44,7 +44,8 @@ residguard_ws/
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
-│   │   └── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
+│   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
+│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement): alcance por vínculo del padrón, no por community_members
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -55,6 +56,8 @@ residguard_ws/
 │   │   │   ├── permissions_client.ts ← permisos efectivos vía auth_ws + caché por sid
 │   │   │   ├── require_permission.ts ← preHandler de permiso (403)
 │   │   │   └── community_access.ts  ← alcance por comunidad (preHandlers + helpers)
+│   │   ├── platform/
+│   │   │   └── tenant_admin_client.ts ← cliente de la superficie tenant de admin_ws (invitaciones)
 │   │   └── http/                    ← error handler + traducción de errores PG
 │   ├── config.ts
 │   └── server.ts
@@ -231,6 +234,8 @@ número JSON (NUMERIC(14,2) en BD).
 |---|---|
 | `DATABASE_URL` | Conexión como `role_app` |
 | `AUTH_WS_BASE_URL` | JWKS `/auth/.well-known/keys` + permisos efectivos (https en producción) |
+| `ADMIN_WS_BASE_URL` | Superficie tenant `/tenant/v1` de admin_ws: invitación de usuarios del cliente (decisión #23 de la plataforma). Viaja el access token del usuario final; https en producción |
+| `RESIDENT_ROLE_CODE` | `auth.roles.code` que se asigna al invitar personas del padrón — default `community_resident` (sembrado por `admin_project/db/99_patch_residguard_resident_role.sql`) |
 | `PERMISSIONS_STALE_GRACE_MINUTES` | Gracia de permisos cacheados si `auth_ws` cae — default 15, `0` = fallar cerrado |
 | `RESIDGUARD_APP_CODE` | appCode de ResidGuard (ancla de autorización) — default `residguard-app` |
 | `CORS_ORIGINS` | Lista blanca separada por comas (SPA dev: `http://localhost:4204`) |
@@ -276,5 +281,21 @@ Validada al boot con structure-verifier; si falta algo, el proceso no arranca.
   por comunidad, el cambio va en el RBAC de plataforma — acotar el grant a un
   ámbito — nunca en un rol local que reintroduzca la frontera del permiso
   dentro de la BD de negocio.
-- Sincronización del espejo `core.customers`/`core.users`
-  (`role_identity_sync`) — servicio aparte.
+- Sincronización del espejo `core.users`: **absorbida por el flujo de
+  invitación** (2026-08-08). `POST /communities/:communityId/members/:memberId/invitation`
+  invita a la persona vía la superficie tenant de admin_ws (rol
+  `RESIDENT_ROLE_CODE`, correo y activación los pone la plataforma), siembra el
+  espejo `core.users` con el `userId` devuelto y fija `members.user_id` — un
+  solo botón que también resuelve la multipertenencia (email con cuenta →
+  admin_ws reutiliza la identidad y aquí solo se vincula; respuesta idéntica a
+  propósito). Subrecursos: `GET/DELETE .../user` (estado del vínculo /
+  desvincular) y `POST .../invitation/resend|cancel`. Permisos: el catálogo
+  RESERVADO `platform_users.read`/`platform_users.invite` (decisión #23), que
+  admin_ws re-aplica sobre el mismo token. **No** se inserta en
+  `community_members`: un residente ve *sus unidades*, no la comunidad — esa
+  autoconsulta ya existe en `me/v1` (`GET /me/units`,
+  `GET /me/units/:unitId/statement`, permisos `self_units.read` /
+  `self_statement.read` del rol `community_resident`; el estado de cuenta reusa
+  la consulta V2 de reports con la pertenencia resuelta por el vínculo del
+  padrón). El espejo `core.customers` sigue pendiente de sincronización
+  (`role_identity_sync` se conserva para un backfill masivo).

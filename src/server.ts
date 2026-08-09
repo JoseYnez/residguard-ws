@@ -24,6 +24,7 @@ import { fundAdjustmentsV1Routes } from "./api/fund-adjustments/v1/fund_adjustme
 import { cashAccountsV1Routes } from "./api/cash-accounts/v1/cash_accounts_v1.routes";
 import { cashTransfersV1Routes } from "./api/cash-transfers/v1/cash_transfers_v1.routes";
 import { reportsV1Routes } from "./api/reports/v1/reports_v1.routes";
+import { meV1Routes } from "./api/me/v1/me_v1.routes";
 
 async function main(): Promise<void> {
     // En desarrollo usamos pino-pretty para que la línea de acceso salga limpia
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
     await app.register(cashAccountsV1Routes);
     await app.register(cashTransfersV1Routes);
     await app.register(reportsV1Routes);
+    await app.register(meV1Routes);
 
     await app.listen({ port: config.port, host: config.host });
 

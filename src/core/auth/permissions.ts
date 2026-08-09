@@ -139,6 +139,30 @@ export const PERMISSIONS = {
     // pantalla a medias para casi todo el mundo, que es peor que negarla entera.
     // Solo `.read`: un reporte deriva, nunca escribe.
     reportsRead: "reports.read",
+
+    // --- Catálogo RESERVADO de plataforma (decisión #23 de admin_project) ----
+    // Códigos `platform_*` del catálogo de residguard-app, pero sembrados por
+    // admin_project (09_tenant_admin_api.sql + 99_patch_residguard_resident_role.sql),
+    // NO por el seed de ResidGuard: son la autorización de la superficie tenant
+    // de admin_ws (invitar usuarios del cliente desde esta app). Este servicio
+    // los exige en los endpoints de invitación del padrón como fast-fail; la
+    // frontera real la re-aplica admin_ws sobre el MISMO token en cada llamada,
+    // así que aunque este guard mintiera, la plataforma denegaría.
+    platformUsersRead: "platform_users.read",
+    platformUsersInvite: "platform_users.invite",
+
+    // --- Autoconsulta del RESIDENTE (portal, rutas /me/*) --------------------
+    // Autorizan leer LO PROPIO: las unidades vinculadas al usuario del token
+    // (members.user_id = sub) y su estado de cuenta. La frontera de alcance
+    // aquí NO es community_members (un residente no ve la comunidad): es el
+    // vínculo del padrón — por eso las rutas /me/* no llevan
+    // requireCommunityAccess y resuelven la pertenencia por la cadena
+    // sub → members.user_id → unit_members → units. Los concede el rol
+    // `community_resident` (y también community_admin: la anti-escalada de la
+    // superficie tenant exige que quien concede un rol tenga sus permisos).
+    // Sembrados por admin_project/db/99_patch_residguard_self_service.sql.
+    selfUnitsRead: "self_units.read",
+    selfStatementRead: "self_statement.read",
 } as const;
 
 /** Unión de todos los códigos FUNCIONALES del catálogo. El guard solo acepta
@@ -181,6 +205,8 @@ export const SCREEN_PERMISSIONS = {
     cashAccounts: "screens.cash_accounts",
     reports: "screens.reports",
     movements: "screens.movements",
+    myUnits: "screens.my_units",
+    myStatement: "screens.my_statement",
 } as const;
 
 /** Unión de los códigos de pantalla. Ningún guard de este servicio los acepta. */
