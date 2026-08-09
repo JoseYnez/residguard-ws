@@ -141,5 +141,48 @@ export const PERMISSIONS = {
     reportsRead: "reports.read",
 } as const;
 
-/** Unión de todos los códigos del catálogo. El guard solo acepta estos. */
+/** Unión de todos los códigos FUNCIONALES del catálogo. El guard solo acepta
+ *  estos. Los códigos de pantalla (`SCREEN_PERMISSIONS`) quedan FUERA a
+ *  propósito: ver el comentario de ese objeto. */
 export type PermissionCode = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
+
+// Permisos de PANTALLA (decisión #24 de la plataforma): filas kind='screen'
+// del mismo catálogo de BD. Conceden ABRIR una vista de residguard_app —
+// existen porque pantalla y recurso dejaron de ser 1:1 (`reports.read`
+// guardaba CUATRO rutas: statement, statement-v2, reports y movements) — y
+// los consume SOLO el front (guard de ruta + poda del menú).
+//
+// ⚠ INVARIANTE — un código de pantalla NUNCA es frontera de seguridad. Este
+// servicio no exige ninguno: cada endpoint conserva su código funcional de
+// `PERMISSIONS`. La separación en dos objetos es lo que hace el invariante
+// ESTRUCTURAL: `requirePermission` solo acepta `PermissionCode`, así que
+// `requirePermission(SCREEN_PERMISSIONS.units)` no compila. NO fusionar los
+// dos objetos ni ensanchar `PermissionCode` — eso degradaría el invariante a
+// una convención.
+//
+// Se listan aquí (y no solo en el front) porque este archivo es el espejo
+// declarado del catálogo de BD: si BD y espejo divergen, alguien lo nota
+// leyendo UN archivo. Mismo pacto de sincronía del encabezado, contra
+// `admin_project/db/99_patch_residguard_screens.sql` (BD ya sembradas) y
+// `99_seed_residguard_app.sql` (builds nuevos).
+export const SCREEN_PERMISSIONS = {
+    communities: "screens.communities",
+    units: "screens.units",
+    members: "screens.members",
+    directory: "screens.directory",
+    fees: "screens.fees",
+    charges: "screens.charges",
+    statement: "screens.statement",
+    statementV2: "screens.statement_v2",
+    payments: "screens.payments",
+    expenseCategories: "screens.expense_categories",
+    expenses: "screens.expenses",
+    fundAdjustments: "screens.fund_adjustments",
+    cashAccounts: "screens.cash_accounts",
+    reports: "screens.reports",
+    movements: "screens.movements",
+} as const;
+
+/** Unión de los códigos de pantalla. Ningún guard de este servicio los acepta. */
+export type ScreenPermissionCode =
+    (typeof SCREEN_PERMISSIONS)[keyof typeof SCREEN_PERMISSIONS];
