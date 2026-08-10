@@ -12,6 +12,7 @@ import {
   myUnitListV1V,
   unitChargeStatementV1V,
   unitStatementQueryV1V,
+  visitDetailV1V,
   visitListV1V,
   visitV1V,
 } from "./me_v1.verifier";
@@ -124,22 +125,25 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
     },
   );
 
-  // Un pase mío (la pantalla del QR entra por aquí al recargar).
+  // Un pase mío CON su bitácora: las entradas y salidas que anotó la caseta.
+  // Es la misma forma que devuelve el detalle del operador (`visitDetailV1V`)
+  // porque es el mismo hecho: quién llegó y a qué hora. Lo que cambia es la
+  // frontera —aquí la propiedad, allá la comunidad—, no el contrato.
   app.get(
     "/me/visits/:id",
     {
       schema: {
         params: idParamV1V,
-        response: { 200: visitV1V, 404: errorResponseV1V },
+        response: { 200: visitDetailV1V, 404: errorResponseV1V },
       },
       preHandler: [requirePermission(PERMISSIONS.selfVisitsRead)],
     },
     async (req, reply) => {
-      const visit = await meController.myVisit(req, req.params.id);
-      if (visit === null) {
+      const detail = await meController.myVisitDetail(req, req.params.id);
+      if (detail === null) {
         return reply.code(404).send({ error: "not_found", message: null });
       }
-      return reply.code(200).send(visit);
+      return reply.code(200).send(detail);
     },
   );
 

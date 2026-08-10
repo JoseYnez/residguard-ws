@@ -11,6 +11,7 @@ import {
   VISIT_STATE_EXPR,
   type CreateVisitInput,
   type Visit,
+  type VisitEvent,
   type VisitRow,
 } from "../../visits/v1/visits_v1.repository";
 
@@ -224,6 +225,28 @@ export const meRepository = {
     );
     const row = result.rows[0];
     return row === undefined ? null : mapVisit(row);
+  },
+
+  /**
+   * Un pase MÍO con su bitácora de caseta. `null` = ajeno o inexistente → 404.
+   *
+   * La propiedad se comprueba primero (`myVisit`) y sólo entonces se leen los
+   * eventos, con la comunidad que salió del propio pase: así el residente nunca
+   * nombra una comunidad, y `listEvents` conserva su firma por comunidad — la
+   * misma consulta que lee la bitácora del operador, no una segunda copia que
+   * pueda divergir.
+   */
+  async myVisitDetail(
+    tx: TxClient,
+    userId: string,
+    visitId: string,
+  ): Promise<{ visit: Visit; events: VisitEvent[] } | null> {
+    const visit = await this.myVisit(tx, userId, visitId);
+    if (visit === null) {
+      return null;
+    }
+    const events = await visitsRepository.listEvents(tx, visit.communityId, visitId);
+    return { visit, events };
   },
 
   /**

@@ -43,6 +43,7 @@ export { errorResponseV1V, unitChargeStatementV1V, unitStatementQueryV1V };
 export {
   createVisitV1V,
   listMyVisitsQueryV1V,
+  visitDetailV1V,
   visitListV1V,
   visitV1V,
 } from "../../visits/v1/visits_v1.verifier";

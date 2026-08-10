@@ -9,7 +9,7 @@ import {
   normalizeVisitInput,
   type RawVisitInput,
 } from "../../visits/v1/visits_v1.controller";
-import type { Visit } from "../../visits/v1/visits_v1.repository";
+import type { Visit, VisitEvent } from "../../visits/v1/visits_v1.repository";
 import { meRepository, type MyUnit } from "./me_v1.repository";
 
 // Orquestación del recurso me. No hay preHandler de alcance que garantizar:
@@ -60,6 +60,17 @@ export const meController = {
   async myVisit(req: FastifyRequest, visitId: string): Promise<Visit | null> {
     const claims = requireAuth(req);
     return withTransaction(contextFor(req), (tx) => meRepository.myVisit(tx, claims.sub, visitId));
+  },
+
+  /** El pase MÁS sus entradas y salidas de caseta. `null` → 404 en la route. */
+  async myVisitDetail(
+    req: FastifyRequest,
+    visitId: string,
+  ): Promise<{ visit: Visit; events: VisitEvent[] } | null> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.myVisitDetail(tx, claims.sub, visitId),
+    );
   },
 
   /**
