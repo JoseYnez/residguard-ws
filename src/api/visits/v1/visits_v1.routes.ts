@@ -11,6 +11,7 @@ import {
 import { visitsController } from "./visits_v1.controller";
 import {
     checkInVisitV1V,
+    checkOutVisitV1V,
     errorResponseV1V,
     listVisitsQueryV1V,
     visitCodeParamV1V,
@@ -164,6 +165,56 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 timezone: config.dbTimezone,
             };
             return reply.code(result.verdict === "ok" ? 201 : 409).send(payload);
+        },
+    );
+
+    // Caseta, el otro lado del mismo paso: registrar la SALIDA.
+    //
+    // Sin permiso propio: quien puede abrir para que alguien entre puede
+    // registrar que se fue. Un código nuevo obligaría a tocar el catálogo de la
+    // plataforma para autorizar la mitad menos delicada de la operación —y a
+    // re-sembrarlo en producción— sin cerrar ninguna puerta que `visits.checkin`
+    // no cierre ya.
+    //
+    // 409 = el pase existe pero no tiene una entrada abierta (nunca llegó, o ya
+    // se registró su salida). Se responde con el pase completo, igual que el
+    // check-in, para que la caseta muestre de qué pase habla.
+    app.post(
+        "/communities/:communityId/visits/:id/exits",
+        {
+            schema: {
+                params: communityScopedIdParamV1V,
+                body: checkOutVisitV1V,
+                response: {
+                    201: visitVerdictV1V,
+                    404: errorResponseV1V,
+                    409: visitVerdictV1V,
+                },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsCheckin), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const b = req.body;
+            const result = await visitsController.checkOut(
+                req,
+                req.params.communityId,
+                req.params.id,
+                { gate: b.gate ?? null, notes: b.notes ?? null },
+            );
+            if (result === null) {
+                return reply.code(404).send({ error: "not_found", message: null });
+            }
+            // `valid` sigue siendo el veredicto de ENTRADA del pase, no el de
+            // esta operación: la salida no lo consulta. Un pase que venció con
+            // el visitante adentro sale con `valid: false` y su salida quedó
+            // registrada igual — que es justo lo que tenía que pasar.
+            const payload = {
+                visit: result.value.visit,
+                valid: result.value.verdict === "ok",
+                reason: result.value.verdict,
+                timezone: config.dbTimezone,
+            };
+            return reply.code(result.recorded ? 201 : 409).send(payload);
         },
     );
 }

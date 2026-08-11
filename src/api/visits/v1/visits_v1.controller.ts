@@ -217,4 +217,24 @@ export const visitsController = {
             visitsRepository.checkIn(tx, communityId, visitId, input),
         );
     },
+
+    /**
+     * Registra la salida. `null` → 404; `recorded: false` → 409 (el pase existe
+     * pero no tiene una entrada abierta que cerrar). A diferencia del check-in,
+     * la vigencia NO se consulta: quien entró sale, aunque su pase haya vencido
+     * mientras estaba adentro.
+     */
+    async checkOut(
+        req: FastifyRequest,
+        communityId: string,
+        visitId: string,
+        input: {
+            readonly gate: string | null;
+            readonly notes: string | null;
+        },
+    ): Promise<{ recorded: boolean; value: VisitWithVerdict } | null> {
+        return withTransaction(contextFor(req), (tx) =>
+            visitsRepository.checkOut(tx, communityId, visitId, input),
+        );
+    },
 };

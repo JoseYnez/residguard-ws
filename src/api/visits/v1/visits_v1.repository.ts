@@ -86,6 +86,18 @@ export interface Visit {
     readonly state: VisitState;
     readonly entryCount: number;
     readonly lastEntryAt: string | null;
+    /**
+     * El último movimiento del pase fue una ENTRADA (o dicho al revés: hay una
+     * entrada sin su salida). Es lo que decide qué le ofrece la caseta al
+     * siguiente escaneo — registrar la salida en vez de otra entrada.
+     *
+     * Deliberadamente NO se llama `inside`: un pase de servicio con tres
+     * trabajadores es un solo pase, y cuando el primero se va el pase queda
+     * "sin entrada abierta" aunque queden dos adentro. Nombrar el hecho —el
+     * último evento— y no la interpretación es lo que impide que la UI afirme
+     * algo que el modelo no sabe.
+     */
+    readonly openEntry: boolean;
     readonly createdAt: string;
     readonly updatedAt: string;
 }
@@ -179,6 +191,8 @@ export interface VisitRow {
     state: VisitState;
     entry_count: number;
     last_entry_at: Date | null;
+    /** NULL cuando el pase no tiene ni un evento (nadie ha llegado todavía). */
+    open_entry: boolean | null;
     created_at: Date;
     updated_at: Date;
 }
@@ -215,6 +229,17 @@ export const VISIT_COLUMNS = `
      FROM access.visit_events e
     WHERE e.visit_id = v.id AND e.event_type = 'check_in' AND e.status = 'active'
   ) AS last_entry_at,
+  -- ¿El último movimiento fue una entrada? Se mira el ÚLTIMO evento y no se
+  -- cuentan entradas contra salidas: con eventos anulados o capturados fuera de
+  -- orden los conteos se descuadran, mientras que "lo último que pasó" siempre
+  -- tiene respuesta. El desempate por created_at es para los dos eventos que
+  -- caen en el mismo instante (entrada y salida tecleadas de corrido).
+  (SELECT e.event_type = 'check_in'
+     FROM access.visit_events e
+    WHERE e.visit_id = v.id AND e.status = 'active'
+    ORDER BY e.occurred_at DESC, e.created_at DESC
+    LIMIT 1
+  ) AS open_entry,
   v.created_at, v.updated_at
 `;
 
@@ -253,6 +278,9 @@ export function mapVisit(row: VisitRow): Visit {
         state: row.state,
         entryCount: Number(row.entry_count),
         lastEntryAt: row.last_entry_at?.toISOString() ?? null,
+        // Sin eventos la subconsulta devuelve NULL, que aquí es `false`: un pase
+        // que nadie ha usado no tiene una entrada abierta.
+        openEntry: row.open_entry === true,
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
     };
@@ -467,6 +495,87 @@ export const visitsRepository = {
         // acaban de cambiar, y el cliente pinta el resultado del check-in.
         const after = await evaluateVisit(tx, communityId, "v.id = $2", visitId);
         return after;
+    },
+
+    /**
+     * Registra la SALIDA. Espeja al check-in en la mecánica (lock, inserción,
+     * relectura) y se aparta de él en lo único que importa: **no hay puerta de
+     * veredicto**.
+     *
+     * Un pase de servicio de 08:00 a 18:00 con el trabajador todavía adentro a
+     * las 18:30 ya no "puede pasar" — y negarle la salida por eso sería absurdo
+     * dos veces: el visitante se va igual, y la bitácora quedaría con una
+     * entrada eternamente abierta. Salir nunca se autoriza contra la vigencia;
+     * se autoriza contra el hecho de haber entrado.
+     *
+     * De ahí la única condición: tiene que haber una entrada sin su salida. Sin
+     * ella se devuelve `recorded: false` (el llamador responde 409) en vez de
+     * insertar una salida huérfana, que es como un doble toque al botón
+     * duplicaría el movimiento.
+     */
+    async checkOut(
+        tx: TxClient,
+        communityId: string,
+        visitId: string,
+        input: {
+            readonly gate: string | null;
+            readonly notes: string | null;
+        },
+    ): Promise<{ recorded: boolean; value: VisitWithVerdict } | null> {
+        const locked = await tx.query<{ id: string }>(
+            `SELECT v.id
+               FROM access.visits v
+              WHERE v.id = $1 AND v.community_id = $2 AND v.status <> 'deleted'
+              FOR UPDATE OF v`,
+            [visitId, communityId],
+        );
+        if (locked.rows[0] === undefined) {
+            return null;
+        }
+
+        // El último movimiento, con el pase ya bloqueado: la misma definición
+        // que `open_entry` de la proyección, resuelta aquí contra el lock.
+        const last = await tx.query<{ id: string; event_type: string }>(
+            `SELECT e.id, e.event_type::text
+               FROM access.visit_events e
+              WHERE e.visit_id = $1 AND e.community_id = $2 AND e.status = 'active'
+              ORDER BY e.occurred_at DESC, e.created_at DESC
+              LIMIT 1`,
+            [visitId, communityId],
+        );
+        const lastEvent = last.rows[0];
+
+        const current = await evaluateVisit(tx, communityId, "v.id = $2", visitId);
+        if (current === null) {
+            return null;
+        }
+        if (lastEvent === undefined || lastEvent.event_type !== "check_in") {
+            return { recorded: false, value: current };
+        }
+
+        // Quién sale es quien entró: nombre, acompañantes y placas se copian del
+        // evento de entrada en vez de re-preguntarse. La IDENTIFICACIÓN no se
+        // copia — se cotejó al entrar y nadie la vuelve a mirar al salir; el
+        // acceso sí se hereda si la caseta no declara el suyo.
+        await tx.query(
+            `INSERT INTO access.visit_events (
+                 customer_id, community_id, visit_id, unit_id,
+                 event_type, source, gate,
+                 visitor_name, companions, vehicle_plate, notes
+             )
+             SELECT e.customer_id, e.community_id, e.visit_id, e.unit_id,
+                    'check_out', 'gate', COALESCE($2, e.gate),
+                    e.visitor_name, e.companions, e.vehicle_plate, $3
+               FROM access.visit_events e
+              WHERE e.id = $1`,
+            [lastEvent.id, input.gate, input.notes],
+        );
+
+        const after = await evaluateVisit(tx, communityId, "v.id = $2", visitId);
+        if (after === null) {
+            return null;
+        }
+        return { recorded: true, value: after };
     },
 
     /** Eventos de un pase, del más reciente al más antiguo. */

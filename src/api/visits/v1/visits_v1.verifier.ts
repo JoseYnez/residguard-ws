@@ -61,6 +61,8 @@ export const visitV1V = new V.ObjectNotNull({
     state: new V.StringNotNull(),
     entryCount: new V.NumberNotNull(),
     lastEntryAt: new V.String(),
+    /** El último movimiento fue una entrada: hay una entrada sin su salida. */
+    openEntry: new V.BooleanNotNull(),
     createdAt: new V.StringNotNull(),
     updatedAt: new V.StringNotNull(),
 });
@@ -149,6 +151,19 @@ export const checkInVisitV1V = new V.ObjectNotNull(
         visitorDocument: new V.String({ maxLength: 60 }),
         companions: new V.Number({ min: 0, max: 99, maxDecimalPlaces: 0 }),
         vehiclePlate: new V.String({ maxLength: 20 }),
+        gate: new V.String({ maxLength: 60 }),
+        notes: new V.String({ maxLength: 500 }),
+    },
+    { strictMode: true },
+);
+
+// --- Entrada: registrar la salida --------------------------------------------
+// Mucho más corto que el check-in, y a propósito: quién sale, con cuántos y en
+// qué coche ya se capturó al ENTRAR, y el servidor lo copia del propio evento
+// de entrada. Volver a preguntarlo sería invitar a que las dos mitades del
+// mismo paso por la caseta se contradigan.
+export const checkOutVisitV1V = new V.ObjectNotNull(
+    {
         gate: new V.String({ maxLength: 60 }),
         notes: new V.String({ maxLength: 500 }),
     },
