@@ -51,6 +51,7 @@ export type VisitVerdict =
     | "expired"
     | "wrong_weekday"
     | "out_of_window"
+    | "already_inside"
     | "exhausted"
     | "unit_inactive"
     | "member_inactive";
@@ -80,6 +81,12 @@ export interface Visit {
      *  `readonly` array, y esta es la forma de salida. */
     readonly weekdays: number[];
     readonly maxEntries: number | null;
+    /**
+     * Política de reingreso del pase (free/normal/strict). Solo `strict`
+     * cambia el veredicto (already_inside con una entrada abierta); free vs
+     * normal es ergonomía de la caseta — qué botón queda a la mano.
+     */
+    readonly accessMode: string;
     readonly requiresId: boolean;
     readonly notes: string | null;
     readonly visitStatus: string;
@@ -136,6 +143,7 @@ export interface CreateVisitInput {
     readonly timeTo: string | null;
     readonly weekdays: readonly number[];
     readonly maxEntries: number | null;
+    readonly accessMode: string;
     readonly requiresId: boolean;
     readonly notes: string | null;
 }
@@ -185,6 +193,7 @@ export interface VisitRow {
     time_to: string | null;
     weekdays_mask: number;
     max_entries: number | null;
+    access_mode: string;
     requires_id: boolean;
     notes: string | null;
     visit_status: string;
@@ -221,7 +230,7 @@ export const VISIT_COLUMNS = `
   v.visitor_name, v.visitor_company, v.visitor_phone, v.vehicle_plate, v.companions,
   v.valid_from::text, v.valid_to::text,
   v.time_from::text, v.time_to::text,
-  v.weekdays_mask, v.max_entries, v.requires_id, v.notes,
+  v.weekdays_mask, v.max_entries, v.access_mode::text, v.requires_id, v.notes,
   v.visit_status::text,
   ${VISIT_STATE_EXPR} AS state,
   access.fn_get_visit_entry_count(v.id) AS entry_count,
@@ -272,6 +281,7 @@ export function mapVisit(row: VisitRow): Visit {
         timeTo: row.time_to,
         weekdays: maskToWeekdays(row.weekdays_mask),
         maxEntries: row.max_entries,
+        accessMode: row.access_mode,
         requiresId: row.requires_id,
         notes: row.notes,
         visitStatus: row.visit_status,
@@ -289,6 +299,13 @@ export function mapVisit(row: VisitRow): Visit {
 export interface VisitWithVerdict {
     readonly visit: Visit;
     readonly verdict: VisitVerdict;
+    /**
+     * Teléfono de quien emitió el pase, SOLO cuando el veredicto es
+     * `already_inside` — el momento en que el guardia necesita llamar al
+     * residente para aclarar. En cualquier otro veredicto es null aunque el
+     * miembro tenga teléfono: no se expone en cada escaneo.
+     */
+    readonly memberPhone: string | null;
 }
 
 /**
@@ -310,7 +327,12 @@ async function evaluateVisit(
     filterSql: string,
     filterValue: string,
 ): Promise<VisitWithVerdict | null> {
-    const result = await tx.query<VisitRow & { verdict: VisitVerdict }>(
+    // `already_inside` va tras el horario y antes del tope: si un pase estricto
+    // tiene la entrada abierta, "ya está adentro" es la explicación accionable
+    // (registrar la salida) aunque además se le hayan acabado las entradas. La
+    // condición repite la subconsulta de `open_entry` de VISIT_COLUMNS porque
+    // un alias de proyección no es referenciable dentro del mismo SELECT.
+    const result = await tx.query<VisitRow & { verdict: VisitVerdict; member_phone: string | null }>(
         `SELECT ${VISIT_COLUMNS},
                 CASE
                   WHEN v.visit_status = 'cancelled' THEN 'cancelled'
@@ -324,11 +346,24 @@ async function evaluateVisit(
                   WHEN v.time_from IS NOT NULL
                    AND (LOCALTIME < v.time_from OR LOCALTIME > v.time_to)
                                                     THEN 'out_of_window'
+                  WHEN v.access_mode = 'strict'
+                   AND COALESCE((SELECT e.event_type = 'check_in'
+                          FROM access.visit_events e
+                         WHERE e.visit_id = v.id AND e.status = 'active'
+                         ORDER BY e.occurred_at DESC, e.created_at DESC
+                         LIMIT 1), false)
+                                                    THEN 'already_inside'
                   WHEN v.max_entries IS NOT NULL
                    AND access.fn_get_visit_entry_count(v.id) >= v.max_entries
                                                     THEN 'exhausted'
                   ELSE 'ok'
-                END AS verdict
+                END AS verdict,
+                (SELECT p.phone
+                   FROM community.member_phones p
+                  WHERE p.member_id = v.member_id AND p.status = 'active'
+                  ORDER BY p.created_at
+                  LIMIT 1
+                ) AS member_phone
            ${VISIT_FROM}
           WHERE v.community_id = $1 AND ${filterSql} AND v.status <> 'deleted'`,
         [communityId, filterValue],
@@ -337,7 +372,11 @@ async function evaluateVisit(
     if (row === undefined) {
         return null;
     }
-    return { visit: mapVisit(row), verdict: row.verdict };
+    return {
+        visit: mapVisit(row),
+        verdict: row.verdict,
+        memberPhone: row.verdict === "already_inside" ? row.member_phone : null,
+    };
 }
 
 export interface ListVisitsInput {
@@ -660,6 +699,7 @@ export const visitsRepository = {
             input.timeTo,
             weekdaysToMask(input.weekdays),
             input.maxEntries,
+            input.accessMode,
             input.requiresId,
             input.notes,
         ];
@@ -670,13 +710,13 @@ export const visitsRepository = {
               visit_type, schedule_type,
               visitor_name, visitor_company, visitor_phone, vehicle_plate, companions,
               valid_from, valid_to, time_from, time_to, weekdays_mask,
-              max_entries, requires_id, notes
+              max_entries, access_mode, requires_id, notes
           )
           VALUES ($1, $2, $3, $4, $5,
                   $6::access.visit_type, $7::access.schedule_type,
                   $8, $9, $10, $11, $12,
                   $13::date, $14::date, $15::time, $16::time, $17,
-                  $18, $19, $20)
+                  $18, $19::access.access_mode, $20, $21)
           RETURNING id`;
 
         const MAX_ATTEMPTS = 5;

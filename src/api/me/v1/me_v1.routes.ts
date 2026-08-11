@@ -181,6 +181,7 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         timeTo: b.timeTo ?? null,
         weekdays: b.weekdays ?? null,
         maxEntries: b.maxEntries ?? null,
+        accessMode: b.accessMode ?? null,
         requiresId: b.requiresId ?? null,
         notes: b.notes ?? null,
       });

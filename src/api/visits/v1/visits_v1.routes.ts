@@ -116,6 +116,7 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 valid: found.verdict === "ok",
                 reason: found.verdict,
                 timezone: config.dbTimezone,
+                memberPhone: found.memberPhone,
             });
         },
     );
@@ -163,6 +164,7 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 valid: result.verdict === "ok",
                 reason: result.verdict,
                 timezone: config.dbTimezone,
+                memberPhone: result.memberPhone,
             };
             return reply.code(result.verdict === "ok" ? 201 : 409).send(payload);
         },
@@ -213,6 +215,7 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 valid: result.value.verdict === "ok",
                 reason: result.value.verdict,
                 timezone: config.dbTimezone,
+                memberPhone: result.value.memberPhone,
             };
             return reply.code(result.recorded ? 201 : 409).send(payload);
         },

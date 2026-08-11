@@ -16,8 +16,10 @@ export const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 /** Código del pase: 8 símbolos Crockford base32 (sin I, L, O ni U). */
 export const VISIT_CODE_REGEX = /^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}$/;
 
-export const VISIT_TYPES = ["guest", "service", "delivery", "other"] as const;
+export const VISIT_TYPES = ["guest", "service", "delivery", "other", "event"] as const;
 export const SCHEDULE_TYPES = ["single", "period", "recurring"] as const;
+/** Política de reingreso POR PASE. Solo `strict` cambia el veredicto. */
+export const ACCESS_MODES = ["free", "normal", "strict"] as const;
 export const VISIT_STATES = [
     "active",
     "scheduled",
@@ -53,6 +55,8 @@ export const visitV1V = new V.ObjectNotNull({
     /** Días ISO permitidos (1 = lunes … 7 = domingo). Vacío salvo recurrentes. */
     weekdays: new V.ArrayNotNull(new V.NumberNotNull()),
     maxEntries: new V.Number(),
+    /** Política de reingreso: free | normal | strict. */
+    accessMode: new V.StringNotNull(),
     requiresId: new V.BooleanNotNull(),
     notes: new V.String(),
     /** Lo DECIDIDO: active | cancelled. */
@@ -82,10 +86,18 @@ export const visitVerdictV1V = new V.ObjectNotNull({
     visit: visitV1V,
     valid: new V.BooleanNotNull(),
     /** ok | cancelled | not_yet_valid | expired | wrong_weekday |
-     *  out_of_window | exhausted | unit_inactive | member_inactive */
+     *  out_of_window | already_inside | exhausted | unit_inactive |
+     *  member_inactive */
     reason: new V.StringNotNull(),
     /** Zona con la que se evaluaron el día y la ventana horaria (DB_TIMEZONE). */
     timezone: new V.StringNotNull(),
+    /**
+     * Teléfono de quien emitió el pase, SOLO cuando el veredicto es
+     * `already_inside`: es el momento en que el guardia necesita llamar para
+     * aclarar, y el único en que se expone. En cualquier otro veredicto viaja
+     * null aunque el miembro tenga teléfono.
+     */
+    memberPhone: new V.String(),
 });
 
 // --- Salida: un evento de la bitácora ----------------------------------------
@@ -195,6 +207,8 @@ export const createVisitV1V = new V.ObjectNotNull(
         weekdays: new V.Array(new V.NumberNotNull({ min: 1, max: 7, maxDecimalPlaces: 0 })),
         /** Tope de entradas. Por defecto NULL = sin tope dentro de la vigencia. */
         maxEntries: new V.Number({ min: 1, max: 999, maxDecimalPlaces: 0 }),
+        /** Política de reingreso. `normal` = el comportamiento de siempre. */
+        accessMode: new V.String({ in: [...ACCESS_MODES], defaultValue: "normal" }),
         requiresId: new V.Boolean({ defaultValue: false }),
         notes: new V.String({ maxLength: 500 }),
     },

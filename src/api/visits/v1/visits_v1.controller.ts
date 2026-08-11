@@ -49,6 +49,7 @@ export interface NormalizedVisitInput {
     readonly timeTo: string | null;
     readonly weekdays: readonly number[];
     readonly maxEntries: number | null;
+    readonly accessMode: string;
     readonly requiresId: boolean;
     readonly notes: string | null;
 }
@@ -68,6 +69,8 @@ export interface RawVisitInput {
     readonly timeTo?: string | null;
     readonly weekdays?: readonly number[] | null;
     readonly maxEntries?: number | null;
+    /** Política de reingreso; el verifier ya la acotó a free/normal/strict. */
+    readonly accessMode?: string | null;
     readonly requiresId?: boolean | null;
     readonly notes?: string | null;
 }
@@ -154,6 +157,7 @@ export function normalizeVisitInput(
             timeTo,
             weekdays,
             maxEntries: input.maxEntries ?? null,
+            accessMode: input.accessMode ?? "normal",
             requiresId: input.requiresId ?? false,
             notes: input.notes ?? null,
         },
