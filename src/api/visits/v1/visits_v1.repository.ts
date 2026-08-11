@@ -296,16 +296,99 @@ export function mapVisit(row: VisitRow): Visit {
     };
 }
 
+export interface VisitContactPhone {
+    readonly phone: string;
+    /** Etiqueta libre del número ("casa", "trabajo"); NULL si no se capturó. */
+    readonly label: string | null;
+}
+
+/** Una persona a la que la caseta puede llamar por este pase. */
+export interface VisitContact {
+    readonly memberId: string;
+    readonly name: string;
+    /** Su papel en la unidad (owner/tenant/resident); NULL si ya no figura. */
+    readonly memberType: string | null;
+    /** Emitió el pase: va primero y la caseta lo dice. */
+    readonly issuer: boolean;
+    readonly phones: VisitContactPhone[];
+}
+
 export interface VisitWithVerdict {
     readonly visit: Visit;
     readonly verdict: VisitVerdict;
     /**
-     * Teléfono de quien emitió el pase, SOLO cuando el veredicto es
-     * `already_inside` — el momento en que el guardia necesita llamar al
-     * residente para aclarar. En cualquier otro veredicto es null aunque el
-     * miembro tenga teléfono: no se expone en cada escaneo.
+     * A quién llamar, SOLO cuando el pase no abre. Primero quien lo emitió (con
+     * su número más antiguo al frente, que es el que hace de principal), después
+     * el resto de residentes de la unidad: si el emisor no contesta —o ya no
+     * está en el padrón, que es un veredicto en sí— el vigilante se quedaría sin
+     * salida, y un visitante parado en la caseta necesita que alguien conteste.
+     *
+     * Vacío cuando el veredicto es `ok`: el 90% de los escaneos abren, y ahí la
+     * pantalla tiene una sola acción y ningún teléfono que exponer.
      */
-    readonly memberPhone: string | null;
+    readonly contacts: VisitContact[];
+}
+
+interface ContactRow {
+    member_id: string;
+    name: string;
+    member_type: string | null;
+    issuer: boolean;
+    phones: VisitContactPhone[] | null;
+}
+
+/**
+ * Los contactos de la unidad de un pase, con el emisor al frente.
+ *
+ * Consulta APARTE y no un LATERAL dentro de `evaluateVisit` a propósito: solo
+ * se paga cuando el pase NO abre, que es la única vez que se usa — el camino
+ * común (escanear, abrir, registrar) no carga con este JOIN.
+ *
+ * El emisor se agrega por UNION porque puede ya no figurar en `unit_members`
+ * (lo quitaron de la unidad y su pase sobrevivió): sigue siendo a quien hay que
+ * llamar primero. Si además se dio de baja del padrón no aparece, y entonces la
+ * lista son los demás residentes — que es justo lo que `member_inactive` deja
+ * como única salida.
+ */
+async function unitContacts(
+    tx: TxClient,
+    unitId: string,
+    issuerMemberId: string,
+): Promise<VisitContact[]> {
+    const result = await tx.query<ContactRow>(
+        `SELECT c.member_id, c.name, c.member_type, c.issuer,
+                COALESCE((
+                  SELECT json_agg(json_build_object('phone', p.phone, 'label', p.label)
+                                  ORDER BY p.created_at, p.id)
+                    FROM community.member_phones p
+                   WHERE p.member_id = c.member_id AND p.status = 'active'
+                ), '[]'::json) AS phones
+           FROM (
+             SELECT m.id AS member_id, m.full_name AS name,
+                    um.member_type::text AS member_type,
+                    (m.id = $2) AS issuer
+               FROM community.unit_members um
+               JOIN community.members m ON m.id = um.member_id
+              WHERE um.unit_id = $1 AND um.status = 'active' AND m.status = 'active'
+             UNION ALL
+             SELECT m.id, m.full_name, NULL::text, true
+               FROM community.members m
+              WHERE m.id = $2 AND m.status = 'active'
+                AND NOT EXISTS (
+                  SELECT 1 FROM community.unit_members um2
+                   WHERE um2.unit_id = $1 AND um2.member_id = $2 AND um2.status = 'active'
+                )
+           ) c
+          ORDER BY c.issuer DESC, c.name`,
+        [unitId, issuerMemberId],
+    );
+    return result.rows.map((row) => ({
+        memberId: row.member_id,
+        name: row.name,
+        memberType: row.member_type,
+        issuer: row.issuer,
+        phones: row.phones ?? [],
+    }));
 }
 
 /**
@@ -332,7 +415,7 @@ async function evaluateVisit(
     // (registrar la salida) aunque además se le hayan acabado las entradas. La
     // condición repite la subconsulta de `open_entry` de VISIT_COLUMNS porque
     // un alias de proyección no es referenciable dentro del mismo SELECT.
-    const result = await tx.query<VisitRow & { verdict: VisitVerdict; member_phone: string | null }>(
+    const result = await tx.query<VisitRow & { verdict: VisitVerdict }>(
         `SELECT ${VISIT_COLUMNS},
                 CASE
                   WHEN v.visit_status = 'cancelled' THEN 'cancelled'
@@ -357,13 +440,7 @@ async function evaluateVisit(
                    AND access.fn_get_visit_entry_count(v.id) >= v.max_entries
                                                     THEN 'exhausted'
                   ELSE 'ok'
-                END AS verdict,
-                (SELECT p.phone
-                   FROM community.member_phones p
-                  WHERE p.member_id = v.member_id AND p.status = 'active'
-                  ORDER BY p.created_at
-                  LIMIT 1
-                ) AS member_phone
+                END AS verdict
            ${VISIT_FROM}
           WHERE v.community_id = $1 AND ${filterSql} AND v.status <> 'deleted'`,
         [communityId, filterValue],
@@ -372,11 +449,13 @@ async function evaluateVisit(
     if (row === undefined) {
         return null;
     }
-    return {
-        visit: mapVisit(row),
-        verdict: row.verdict,
-        memberPhone: row.verdict === "already_inside" ? row.member_phone : null,
-    };
+    const visit = mapVisit(row);
+    // Una sola definición de "cuándo viajan los contactos", igual que hay una
+    // sola del veredicto: las tres superficies que llaman aquí (consulta,
+    // entrada y salida) no pueden discrepar sobre a quién se puede llamar.
+    const contacts =
+        row.verdict === "ok" ? [] : await unitContacts(tx, visit.unitId, visit.memberId);
+    return { visit, verdict: row.verdict, contacts };
 }
 
 export interface ListVisitsInput {

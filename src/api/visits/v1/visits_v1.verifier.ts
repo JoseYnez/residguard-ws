@@ -82,6 +82,23 @@ export const visitListV1V = new V.ObjectNotNull({
 // `valid` es lo único que el guardia necesita para decidir; `reason` es lo que
 // necesita para EXPLICAR. Se devuelven juntos y el pase completo va al lado:
 // un pase cancelado se muestra, no se esconde detrás de un 404.
+/** Un número de una persona del padrón, con su etiqueta libre. */
+export const visitContactPhoneV1V = new V.ObjectNotNull({
+    phone: new V.StringNotNull(),
+    label: new V.String(),
+});
+
+/** A quién puede llamar la caseta cuando el pase no abre. */
+export const visitContactV1V = new V.ObjectNotNull({
+    memberId: new V.StringNotNull(),
+    name: new V.StringNotNull(),
+    /** owner | tenant | resident; null si ya no figura en la unidad. */
+    memberType: new V.String(),
+    /** Emitió el pase: viene primero y la caseta lo señala. */
+    issuer: new V.BooleanNotNull(),
+    phones: new V.ArrayNotNull(visitContactPhoneV1V),
+});
+
 export const visitVerdictV1V = new V.ObjectNotNull({
     visit: visitV1V,
     valid: new V.BooleanNotNull(),
@@ -92,12 +109,11 @@ export const visitVerdictV1V = new V.ObjectNotNull({
     /** Zona con la que se evaluaron el día y la ventana horaria (DB_TIMEZONE). */
     timezone: new V.StringNotNull(),
     /**
-     * Teléfono de quien emitió el pase, SOLO cuando el veredicto es
-     * `already_inside`: es el momento en que el guardia necesita llamar para
-     * aclarar, y el único en que se expone. En cualquier otro veredicto viaja
-     * null aunque el miembro tenga teléfono.
+     * A quién llamar, y SOLO cuando el pase no abre: primero quien lo emitió,
+     * después el resto de residentes de la unidad. Vacío con `ok` — un pase que
+     * abre no necesita que nadie conteste el teléfono.
      */
-    memberPhone: new V.String(),
+    contacts: new V.ArrayNotNull(visitContactV1V),
 });
 
 // --- Salida: un evento de la bitácora ----------------------------------------
