@@ -229,6 +229,7 @@ export const SCREEN_PERMISSIONS = {
     cashAccounts: "screens.cash_accounts",
     reports: "screens.reports",
     movements: "screens.movements",
+    periodResult: "screens.period_result",
     myUnits: "screens.my_units",
     myStatement: "screens.my_statement",
     myVisits: "screens.my_visits",
