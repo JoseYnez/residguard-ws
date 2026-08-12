@@ -10,6 +10,8 @@ import {
   errorResponseV1V,
   movementListV1V,
   reportMovementsQueryV1V,
+  reportPeriodResultQueryV1V,
+  reportPeriodResultV1V,
   reportSummaryQueryV1V,
   reportSummaryV1V,
   reportUnitsQueryV1V,
@@ -66,6 +68,41 @@ export async function reportsV1Routes(instance: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(200).send(summary);
+    },
+  );
+
+  // Resultado del periodo: ingresos − egresos, con el desglose de ingresos
+  // partido por cuota Y PERIODO. Ruta propia y no un campo más del resumen
+  // porque ese detalle multiplica los renglones y solo lo pide esta lectura;
+  // mismo permiso, mismo alcance y mismas consultas de caja, así que sus totales
+  // son los del resumen sin filtro. No lleva `cashAccountId`: el resultado es
+  // siempre el de la comunidad entera.
+  app.get(
+    "/communities/:communityId/reports/period-result",
+    {
+      schema: {
+        params: communityIdParamV1V,
+        querystring: reportPeriodResultQueryV1V,
+        response: { 200: reportPeriodResultV1V, 400: errorResponseV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.reportsRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      // Mismo rechazo que el resumen: un resultado en ceros se lee como "el
+      // periodo no se movió", que no es lo que pasó con un rango invertido.
+      if (q.from > q.to) {
+        return reply.code(400).send({
+          error: "invalid",
+          message: "La fecha inicial no puede ser posterior a la final.",
+        });
+      }
+      const result = await reportsController.periodResult(req, {
+        communityId: req.params.communityId,
+        from: q.from,
+        to: q.to,
+      });
+      return reply.code(200).send(result);
     },
   );
 

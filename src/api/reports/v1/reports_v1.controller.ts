@@ -8,6 +8,8 @@ import {
   type ListUnitDebtInput,
   type Movement,
   type MovementTotals,
+  type PeriodResult,
+  type PeriodResultInput,
   type ReportRangeInput,
   type ReportSummary,
   type UnitDebt,
@@ -30,6 +32,18 @@ export const reportsController = {
   async summary(req: FastifyRequest, input: ReportRangeInput): Promise<ReportSummary | null> {
     return withTransaction(contextFor(req), (tx) =>
       reportsRepository.summary(tx, input, config.dbTimezone),
+    );
+  },
+
+  /**
+   * Resultado del periodo. Una sola transacción, como el resumen: sus dos
+   * desgloses tienen que sumar los totales que acompañan, y leídos en
+   * transacciones distintas un pago que entrara a la mitad haría que el reporte
+   * se contradijera solo — que es justo lo que la pantalla denuncia.
+   */
+  async periodResult(req: FastifyRequest, input: PeriodResultInput): Promise<PeriodResult> {
+    return withTransaction(contextFor(req), (tx) =>
+      reportsRepository.periodResult(tx, input, config.dbTimezone),
     );
   },
 

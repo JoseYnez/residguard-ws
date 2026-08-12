@@ -43,6 +43,18 @@ export const reportSummaryQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+// --- Entrada: resultado del periodo (GET .../reports/period-result) ------------
+// Mismo rango de negocio que el resumen y SIN filtro de caja: este reporte es
+// siempre la comunidad entera. Acotarlo a una caja convertiría "cuánto entró"
+// en "cuánto entró ahí", que es otra pregunta — y la responde el resumen.
+export const reportPeriodResultQueryV1V = new V.ObjectNotNull(
+  {
+    from: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+    to: new V.StringNotNull({ regex: ISO_DATE_REGEX }),
+  },
+  { strictMode: true },
+);
+
 // --- Entrada: adeudo por unidad (GET .../reports/units) ------------------------
 export const reportUnitsQueryV1V = new V.ObjectNotNull(
   {
@@ -210,6 +222,51 @@ export const reportSummaryV1V = new V.ObjectNotNull({
   expensesByCategory: new V.ArrayNotNull(expenseCategoryShareV1V),
   incomeByFee: new V.ArrayNotNull(feeShareV1V),
   incomeByMethod: new V.ArrayNotNull(methodShareV1V),
+});
+
+// --- Salida: resultado del periodo ---------------------------------------------
+
+/**
+ * Un renglón del desglose de ingresos del resultado: la cuota partida por el
+ * PERIODO del cargo cobrado. Un depósito de julio que cubrió mayo, junio y
+ * julio de Mantenimiento son tres renglones — por eso este desglose no cabía
+ * en el resumen, donde el mismo dinero es una sola fila por cuota.
+ *
+ * Sin `share`: el consumidor reparte sobre el total de su lado (que incluye los
+ * movimientos manuales de caja), no sobre el de operaciones.
+ */
+const feePeriodShareV1V = new V.ObjectNotNull({
+  feeId: new V.StringNotNull(),
+  concept: new V.StringNotNull(),
+  /** null = cargo SUELTO (no devenga periodo). */
+  periodId: new V.String(),
+  /** Alias VIGENTE del periodo; null en un suelto o en un periodo sin alias
+   *  propio — el nombre derivado del rango no se calcula, el renglón se queda
+   *  con su concepto a secas. */
+  periodLabel: new V.String(),
+  amount: new V.NumberNotNull(),
+});
+
+const categoryAmountV1V = new V.ObjectNotNull({
+  categoryId: new V.StringNotNull(),
+  name: new V.StringNotNull(),
+  amount: new V.NumberNotNull(),
+});
+
+/**
+ * El periodo como estado de resultados: entró, salió, y los desgloses que lo
+ * explican. Sin saldos, sin cobranza devengada y sin antigüedad a propósito —
+ * eso responde "cuánto dinero hay" y lo publica `summary`.
+ *
+ * `income.total` y `outflow.total` son los mismos de `cash` en el resumen sin
+ * filtro de caja: salen de las mismas consultas.
+ */
+export const reportPeriodResultV1V = new V.ObjectNotNull({
+  range: rangeV1V,
+  income: cashFlowSideV1V,
+  outflow: cashFlowSideV1V,
+  incomeByFeePeriod: new V.ArrayNotNull(feePeriodShareV1V),
+  expensesByCategory: new V.ArrayNotNull(categoryAmountV1V),
 });
 
 // --- Salida: adeudo por unidad -------------------------------------------------

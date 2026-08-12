@@ -138,6 +138,62 @@ export interface ReportSummary {
   readonly incomeByMethod: MethodShare[];
 }
 
+// --- Resultado del periodo (ingresos − egresos, sin saldos) --------------------
+
+export interface PeriodResultInput {
+  readonly communityId: string;
+  readonly from: string;
+  readonly to: string;
+}
+
+/**
+ * Un renglón del desglose de ingresos del resultado: la misma cuota partida por
+ * el PERIODO del cargo que se cobró. Es la diferencia con `incomeByFee` del
+ * resumen, que agrupa solo por cuota — aquí un depósito de julio que cubrió
+ * mayo, junio y julio de Mantenimiento son tres renglones.
+ *
+ * `periodId` null = cargo SUELTO (una venta de tarjetas no devenga periodo).
+ * `periodLabel` null = ese cargo, o un periodo SIN alias propio: el nombre
+ * derivado del rango no se calcula aquí ni allá, el renglón se queda con su
+ * concepto a secas. El alias viaja resuelto por JOIN con `fee_periods` (no por
+ * las columnas copiadas en el cargo), así que renombrar un periodo se lee
+ * renombrado — igual que en el detalle de pagos.
+ */
+export interface FeePeriodShare {
+  readonly feeId: string;
+  readonly concept: string;
+  readonly periodId: string | null;
+  readonly periodLabel: string | null;
+  readonly amount: number;
+}
+
+/** Un rubro de gasto del rango. Sin `share`: el consumidor de este reporte
+ *  reparte sobre el total de SU lado (que incluye los movimientos manuales),
+ *  no sobre el de operaciones. */
+export interface CategoryAmount {
+  readonly categoryId: string;
+  readonly name: string;
+  readonly amount: number;
+}
+
+/**
+ * El periodo leído como estado de resultados: lo que entró, lo que salió y los
+ * dos desgloses que los explican. Deliberadamente SIN saldos (inicial/final),
+ * sin cobranza devengada y sin antigüedad — eso responde "cuánto dinero hay" y
+ * lo publica `summary`; esto responde "cómo le fue al periodo".
+ *
+ * Sale de las MISMAS consultas de caja que el resumen (mismos WHERE, mismo
+ * recorte a día), así que sus totales son los de `cash.income` / `cash.outflow`
+ * de `summary` sin filtro de caja. Lo que cambia es el GROUP BY del ingreso.
+ */
+export interface PeriodResult {
+  readonly range: { readonly from: string; readonly to: string; readonly timezone: string };
+  readonly income: CashFlowSide;
+  readonly outflow: CashFlowSide;
+  readonly incomeByFeePeriod: FeePeriodShare[];
+  readonly expensesByCategory: CategoryAmount[];
+}
+
 export interface UnitDebt {
   readonly unitId: string;
   readonly unitCode: string;
@@ -485,6 +541,28 @@ interface ExpenseCategoryRow {
   category_id: string;
   name: string;
   cash_account_id: string | null;
+  amount: string;
+}
+
+/** Filas del resultado del periodo: sin caja, porque ese reporte es SIEMPRE la
+ *  comunidad entera (acotarlo a una caja convierte "cuánto entró" en "cuánto
+ *  entró ahí", que es la pregunta que responde el resumen). */
+interface FeePeriodIncomeRow {
+  fee_id: string;
+  concept: string;
+  period_id: string | null;
+  period_label: string | null;
+  amount: string;
+}
+
+interface AdjustmentTotalsRow {
+  inflow: string;
+  outflow: string;
+}
+
+interface ExpenseCategoryTotalRow {
+  category_id: string;
+  name: string;
   amount: string;
 }
 
@@ -1237,6 +1315,127 @@ export const reportsRepository = {
           share: shareOf(amount, incomeFromCharges),
         }))
         .sort((a, b) => b.amount - a.amount || a.method.localeCompare(b.method)),
+    };
+  },
+
+  /**
+   * Resultado del periodo: ingresos, egresos y los dos desgloses que los
+   * explican, para [from, to] (días de negocio, ambos inclusivos).
+   *
+   * Endpoint propio y no un campo más del resumen: el desglose de ingresos va
+   * partido por CUOTA Y PERIODO, lo que multiplica sus renglones, y ese detalle
+   * solo lo lee esta pantalla — colgarlo de `summary` engordaría también al
+   * consumidor que no lo pide.
+   *
+   * Que los totales coincidan con los del resumen no depende de la suerte: son
+   * las MISMAS tres consultas de caja (mismos JOINs, mismos WHERE, mismo
+   * recorte a día) sin el filtro de caja, que este reporte no tiene. Lo único
+   * que cambia es el GROUP BY del ingreso.
+   *
+   * Sin saldos de corte, así que no hay `null` que devolver: la existencia de
+   * la comunidad ya la afirmó requireCommunityAccess.
+   */
+  async periodResult(
+    tx: TxClient,
+    input: PeriodResultInput,
+    timezone: string,
+  ): Promise<PeriodResult> {
+    const { communityId, from, to } = input;
+    const range = [communityId, from, to];
+
+    // --- Ingresos por cuota Y PERIODO ----------------------------------------
+    // El periodo sale del JOIN con `fee_periods` (LEFT — regla 4: un cargo
+    // suelto no tiene periodo y con un INNER la venta de tarjetas se caería del
+    // desglose y el total dejaría de cuadrar). El alias es el VIGENTE, no el
+    // copiado en el cargo: renombrar un periodo se lee renombrado.
+    const income = await tx.query<FeePeriodIncomeRow>(
+      `SELECT f.id AS fee_id, f.concept,
+              c.period_id::text AS period_id, fp.label AS period_label,
+              SUM(pa.amount)::text AS amount
+         FROM billing.payment_allocations pa
+         JOIN billing.payments p ON p.customer_id = pa.customer_id AND p.id = pa.payment_id
+         JOIN billing.charges  c ON c.customer_id = pa.customer_id AND c.id = pa.charge_id
+         JOIN billing.fees     f ON f.customer_id = c.customer_id  AND f.id = c.fee_id
+         LEFT JOIN billing.fee_periods fp
+           ON fp.customer_id = c.customer_id AND fp.id = c.period_id
+        WHERE c.community_id = $1
+          AND pa.status <> 'deleted'
+          AND p.status  <> 'deleted'
+          -- ::date recorta el instante en la zona de la SESIÓN, que el pool fija
+          -- a DB_TIMEZONE. En UTC, un pago de las 19:00 caería al día siguiente.
+          AND p.paid_at::date >= $2::date
+          AND p.paid_at::date <= $3::date
+        GROUP BY f.id, f.concept, c.period_id, fp.label, fp.period_start
+        -- Por concepto y, dentro de él, cronológico: multiplicado por periodo,
+        -- un orden por monto dejaría los meses de una misma cuota salteados.
+        -- Los sueltos (sin periodo) cierran su concepto.
+        ORDER BY f.concept, fp.period_start NULLS LAST, fp.label NULLS LAST`,
+      range,
+    );
+
+    // --- Movimientos manuales de caja, partidos por signo ---------------------
+    const adjustments = await tx.query<AdjustmentTotalsRow>(
+      `SELECT COALESCE(SUM(amount)  FILTER (WHERE amount > 0), 0)::text AS inflow,
+              COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0)::text AS outflow
+         FROM billing.fund_adjustments
+        WHERE community_id = $1
+          AND status <> 'deleted'
+          AND adjusted_at >= $2::date
+          AND adjusted_at <= $3::date`,
+      range,
+    );
+
+    // --- Gastos ejercidos, por rubro -----------------------------------------
+    const expenses = await tx.query<ExpenseCategoryTotalRow>(
+      `SELECT ec.id AS category_id, ec.name, SUM(e.amount)::text AS amount
+         FROM billing.expenses e
+         JOIN billing.expense_categories ec
+           ON ec.customer_id = e.customer_id AND ec.id = e.expense_category_id
+        WHERE e.community_id = $1
+          AND e.status <> 'deleted'
+          AND e.expense_date >= $2::date
+          AND e.expense_date <= $3::date
+        GROUP BY ec.id, ec.name
+        ORDER BY SUM(e.amount) DESC, ec.name`,
+      range,
+    );
+
+    const incomeByFeePeriod: FeePeriodShare[] = income.rows.map((row) => ({
+      feeId: row.fee_id,
+      concept: row.concept,
+      periodId: row.period_id,
+      periodLabel: row.period_label,
+      amount: money(row.amount),
+    }));
+    const expensesByCategory: CategoryAmount[] = expenses.rows.map((row) => ({
+      categoryId: row.category_id,
+      name: row.name,
+      amount: money(row.amount),
+    }));
+
+    // Los totales se derivan de los MISMOS renglones que viajan: el desglose no
+    // puede dejar de sumar su total porque no hay dos caminos que puedan
+    // discrepar.
+    const operationsIn = addMoney(...incomeByFeePeriod.map((row) => row.amount));
+    const operationsOut = addMoney(...expensesByCategory.map((row) => row.amount));
+    const adjustmentsRow = adjustments.rows[0];
+    const adjustmentsIn = money(adjustmentsRow?.inflow);
+    const adjustmentsOut = money(adjustmentsRow?.outflow);
+
+    return {
+      range: { from, to, timezone },
+      income: {
+        operations: operationsIn,
+        adjustments: adjustmentsIn,
+        total: addMoney(operationsIn, adjustmentsIn),
+      },
+      outflow: {
+        operations: operationsOut,
+        adjustments: adjustmentsOut,
+        total: addMoney(operationsOut, adjustmentsOut),
+      },
+      incomeByFeePeriod,
+      expensesByCategory,
     };
   },
 
