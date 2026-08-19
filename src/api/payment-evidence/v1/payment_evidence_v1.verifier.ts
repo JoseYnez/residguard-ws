@@ -47,6 +47,9 @@ export const createMyEvidenceV1V = new V.ObjectNotNull(
       minLength: 1,
       maxLength: EVIDENCE_MAX_FILES,
     }),
+    // Cargos que DICE estar cubriendo (opcional). Solo cuáles, sin montos: el
+    // reparto exacto es del operador al verificar; esto precarga su formulario.
+    chargeIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), { maxLength: 100 }),
   },
   { strictMode: true },
 );
@@ -63,6 +66,7 @@ export const createEvidenceV1V = new V.ObjectNotNull(
     fileIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), {
       maxLength: EVIDENCE_MAX_FILES,
     }),
+    chargeIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), { maxLength: 100 }),
   },
   { strictMode: true },
 );
@@ -138,6 +142,21 @@ export const evidenceFileV1V = new V.ObjectNotNull({
   sha256: new V.StringNotNull(),
 });
 
+// --- Salida: un cargo declarado --------------------------------------------------
+// Lo que el remitente DIJO cubrir, resuelto EN VIVO (concepto y periodo
+// vigentes, estatus de cobro actual): el operador lee la intención con datos
+// de hoy, no una foto de cuando se envió.
+export const claimedChargeV1V = new V.ObjectNotNull({
+  chargeId: new V.StringNotNull(),
+  concept: new V.StringNotNull(),
+  quantity: new V.NumberNotNull(),
+  appliedAmount: new V.NumberNotNull(),
+  periodLabel: new V.String(),
+  periodStart: new V.String(),
+  periodEnd: new V.String(),
+  paymentStatus: new V.StringNotNull(),
+});
+
 // --- Salida: una evidencia -----------------------------------------------------
 // `payment` viaja resuelto (si existe): el detalle del pago vive en /payments,
 // aquí solo la referencia y el monto real para contrastar con lo declarado.
@@ -167,6 +186,7 @@ export const evidenceV1V = new V.ObjectNotNull({
   resolvedBy: new V.String(),
   resolutionNote: new V.String(),
   files: new V.ArrayNotNull(evidenceFileV1V),
+  claimedCharges: new V.ArrayNotNull(claimedChargeV1V),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
 });

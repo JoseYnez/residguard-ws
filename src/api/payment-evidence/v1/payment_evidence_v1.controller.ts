@@ -42,6 +42,8 @@ export interface DeclaredEvidenceInput {
   readonly reference?: string | null;
   readonly notes?: string | null;
   readonly fileIds: readonly string[];
+  /** Cargos que el remitente dice cubrir (opcional; solo cuáles, sin montos). */
+  readonly chargeIds: readonly string[];
 }
 
 export interface VerifyInput {
@@ -103,6 +105,26 @@ export const paymentEvidenceController = {
         if (scope === null) {
           return null;
         }
+        // Los cargos declarados deben ser cargos ACTIVOS de ESTA unidad: la
+        // declaración precarga la verificación, y precargar cargos ajenos
+        // convertiría un typo en un reparto equivocado.
+        const distinctCharges = [...new Set(input.chargeIds)];
+        if (distinctCharges.length > 0) {
+          const owned = await paymentEvidenceRepository.countUnitCharges(
+            tx,
+            input.unitId,
+            distinctCharges,
+          );
+          if (owned !== distinctCharges.length) {
+            return {
+              ok: false as const,
+              error: {
+                kind: "invalid" as const,
+                message: "Alguno de los cargos declarados no existe o no es de esa unidad.",
+              },
+            };
+          }
+        }
         const evidence = await paymentEvidenceRepository.create(tx, {
           customerId: claims.customerId,
           communityId: scope.communityId,
@@ -115,6 +137,7 @@ export const paymentEvidenceController = {
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           files: resolved.files,
+          chargeIds: distinctCharges,
         });
         return { ok: true as const, value: evidence };
       });

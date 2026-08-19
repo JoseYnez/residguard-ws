@@ -5,7 +5,10 @@ import { PERMISSIONS } from "../../../core/auth/permissions";
 import { requirePermission } from "../../../core/auth/require_permission";
 import { idParamV1V, unitIdParamV1V } from "../../common/common_v1.verifier";
 import { meController } from "./me_v1.controller";
+import { pageQueryFields } from "../../common/common_v1.verifier";
+import { Verifiers as V } from "structure-verifier";
 import {
+  chargeListV1V,
   createMyEvidenceV1V,
   createVisitV1V,
   errorResponseV1V,
@@ -36,6 +39,10 @@ import {
 // community_admin — la anti-escalada de la superficie tenant exige que quien
 // concede el rol tenga sus permisos, y de paso el operador puede probar el
 // portal con sus propias unidades si las tiene).
+
+// Solo paginación: el listado es SIEMPRE de cargos abiertos (openOnly lo fija
+// el controller) — el formulario no filtra por fechas ni estatus.
+const myUnitChargesQueryV1V = new V.ObjectNotNull({ ...pageQueryFields() }, { strictMode: true });
 
 export async function meV1Routes(instance: FastifyInstance): Promise<void> {
   const app = instance.withTypeProvider<StructureVerifierTypeProvider>();
@@ -301,6 +308,37 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
     },
   );
 
+  // Cargos ABIERTOS de una unidad mía: lo que el formulario de envío ofrece
+  // marcar ("¿qué estás pagando?"). Mismo contrato que el recurso charges;
+  // frontera por la cadena del padrón. Gate: el permiso de ENVIAR — este
+  // listado existe para ese formulario, no es el estado de cuenta (que tiene
+  // su propio permiso y su propia pantalla).
+  app.get(
+    "/me/units/:unitId/charges",
+    {
+      schema: {
+        params: unitIdParamV1V,
+        querystring: myUnitChargesQueryV1V,
+        response: { 200: chargeListV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfPaymentEvidenceCreate)],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const result = await meController.myUnitOpenCharges(req, {
+        unitId: req.params.unitId,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply
+        .code(200)
+        .send({ items: result.items, total: result.total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
   // Enviar un comprobante. Nace pending_review; no hay edición ni cancelación
   // del residente — si fue un error, el operador lo rechaza y se envía otro.
   app.post(
@@ -326,6 +364,7 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         reference: b.reference ?? null,
         notes: b.notes ?? null,
         fileIds: b.fileIds,
+        chargeIds: b.chargeIds ?? [],
       });
       if (result === null) {
         return reply.code(404).send({ error: "not_found", message: null });

@@ -130,6 +130,7 @@ export async function paymentEvidenceV1Routes(instance: FastifyInstance): Promis
         reference: b.reference ?? null,
         notes: b.notes ?? null,
         fileIds: b.fileIds ?? [],
+        chargeIds: b.chargeIds ?? [],
       });
       if (result === null) {
         return reply.code(404).send({ error: "not_found", message: null });

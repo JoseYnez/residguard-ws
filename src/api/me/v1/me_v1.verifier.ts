@@ -59,3 +59,7 @@ export {
   evidenceV1V,
   listMyEvidenceQueryV1V,
 } from "../../payment-evidence/v1/payment_evidence_v1.verifier";
+
+// El checklist de cargos del envío reusa el contrato del recurso charges: el
+// cargo que el residente marca y el que lista el operador son el MISMO objeto.
+export { chargeListV1V } from "../../charges/v1/charges_v1.verifier";

@@ -10,6 +10,7 @@ import {
   type RawVisitInput,
 } from "../../visits/v1/visits_v1.controller";
 import type { Visit, VisitEvent } from "../../visits/v1/visits_v1.repository";
+import { chargesRepository, type Charge } from "../../charges/v1/charges_v1.repository";
 import { resolveFiles } from "../../payment-evidence/v1/payment_evidence_v1.controller";
 import {
   paymentEvidenceRepository,
@@ -191,6 +192,7 @@ export const meController = {
       readonly reference?: string | null;
       readonly notes?: string | null;
       readonly fileIds: readonly string[];
+      readonly chargeIds: readonly string[];
     },
   ): Promise<MutationResult<Evidence> | null> {
     const claims = requireAuth(req);
@@ -206,6 +208,25 @@ export const meController = {
         if (scope === null) {
           return null;
         }
+        // Los cargos declarados deben ser de ESTA unidad (que ya es mía):
+        // misma regla que la captura del operador.
+        const distinctCharges = [...new Set(input.chargeIds)];
+        if (distinctCharges.length > 0) {
+          const owned = await paymentEvidenceRepository.countUnitCharges(
+            tx,
+            input.unitId,
+            distinctCharges,
+          );
+          if (owned !== distinctCharges.length) {
+            return {
+              ok: false as const,
+              error: {
+                kind: "invalid" as const,
+                message: "Alguno de los cargos marcados ya no existe. Recarga e intenta de nuevo.",
+              },
+            };
+          }
+        }
         const evidence = await paymentEvidenceRepository.create(tx, {
           customerId: claims.customerId,
           communityId: scope.communityId,
@@ -218,6 +239,7 @@ export const meController = {
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           files: resolved.files,
+          chargeIds: distinctCharges,
         });
         return { ok: true as const, value: evidence };
       });
@@ -230,6 +252,32 @@ export const meController = {
         }),
       };
     }
+  },
+
+  /**
+   * Cargos ABIERTOS de una unidad mía — lo que el formulario de "enviar
+   * comprobante" ofrece marcar. Reusa la consulta del recurso charges (misma
+   * proyección, mismo saldo derivado); lo que cambia es la frontera: la
+   * cadena del padrón en lugar de la membresía de comunidad. `null` = la
+   * unidad no es mía (404 indistinguible de inexistente).
+   */
+  async myUnitOpenCharges(
+    req: FastifyRequest,
+    input: { readonly unitId: string; readonly page: number; readonly pageSize: number },
+  ): Promise<{ items: Charge[]; total: number } | null> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), async (tx) => {
+      const scope = await meRepository.myUnitScope(tx, claims.sub, input.unitId);
+      if (scope === null) {
+        return null;
+      }
+      return chargesRepository.list(tx, {
+        unitId: input.unitId,
+        page: input.page,
+        pageSize: input.pageSize,
+        openOnly: true,
+      });
+    });
   },
 
   /**

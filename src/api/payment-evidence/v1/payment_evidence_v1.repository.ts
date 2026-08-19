@@ -20,6 +20,19 @@ export interface EvidenceFile {
   readonly sha256: string;
 }
 
+/** Un cargo que el remitente DIJO cubrir, resuelto EN VIVO (concepto y
+ *  periodo vigentes, estatus de cobro actual). */
+export interface ClaimedCharge {
+  readonly chargeId: string;
+  readonly concept: string;
+  readonly quantity: number;
+  readonly appliedAmount: number;
+  readonly periodLabel: string | null;
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
+  readonly paymentStatus: string;
+}
+
 /** Referencia mínima al pago creado al verificar (el detalle vive en /payments). */
 export interface EvidencePaymentRef {
   readonly id: string;
@@ -47,6 +60,7 @@ export interface Evidence {
   readonly resolvedBy: string | null;
   readonly resolutionNote: string | null;
   readonly files: EvidenceFile[];
+  readonly claimedCharges: ClaimedCharge[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -64,6 +78,9 @@ export interface CreateEvidenceInput {
   readonly notes: string | null;
   /** Metadata YA validada contra storage (el espejo que se copia). */
   readonly files: readonly StorageFileMetadata[];
+  /** Cargos que el remitente dice cubrir — YA validados por el caller como
+   *  cargos activos de LA UNIDAD de la evidencia. */
+  readonly chargeIds: readonly string[];
 }
 
 export interface VerifyEvidenceInput {
@@ -107,7 +124,30 @@ const EVIDENCE_COLUMNS = `
      WHERE f.customer_id = e.customer_id
        AND f.evidence_id = e.id
        AND f.status = 'active'
-  ), '[]'::jsonb) AS files
+  ), '[]'::jsonb) AS files,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object(
+             'chargeId', pec.charge_id,
+             'concept', f2.concept,
+             'quantity', c2.quantity,
+             'appliedAmount', c2.applied_amount,
+             'periodLabel', fp2.label,
+             'periodStart', fp2.period_start,
+             'periodEnd', fp2.period_end,
+             'paymentStatus', c2.payment_status)
+           ORDER BY fp2.period_start NULLS LAST, c2.due_date)
+      FROM billing.payment_evidence_charges pec
+      JOIN billing.charges c2
+        ON c2.customer_id = pec.customer_id AND c2.id = pec.charge_id
+      JOIN billing.fees f2
+        ON f2.customer_id = c2.customer_id AND f2.id = c2.fee_id
+      -- LEFT: un cargo SUELTO no tiene periodo (regla de todo SQL de cargos).
+      LEFT JOIN billing.fee_periods fp2
+        ON fp2.customer_id = c2.customer_id AND fp2.id = c2.period_id
+     WHERE pec.customer_id = e.customer_id
+       AND pec.evidence_id = e.id
+       AND pec.status = 'active'
+  ), '[]'::jsonb) AS claimed_charges
 `;
 
 const EVIDENCE_FROM = `
@@ -144,6 +184,7 @@ interface EvidenceRow {
   created_at: Date;
   updated_at: Date;
   files: EvidenceFile[];
+  claimed_charges: ClaimedCharge[];
 }
 
 function mapRow(row: EvidenceRow): Evidence {
@@ -177,6 +218,7 @@ function mapRow(row: EvidenceRow): Evidence {
     resolvedBy: row.resolved_by,
     resolutionNote: row.resolution_note,
     files: row.files,
+    claimedCharges: row.claimed_charges,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -244,11 +286,43 @@ export const paymentEvidenceRepository = {
       );
     }
 
+    for (const chargeId of input.chargeIds) {
+      await tx.query(
+        `INSERT INTO billing.payment_evidence_charges (customer_id, evidence_id, charge_id)
+         VALUES ($1, $2, $3)`,
+        [input.customerId, evidenceId, chargeId],
+      );
+    }
+
     const evidence = await fetchById(tx, evidenceId);
     if (evidence === null) {
       throw new Error("el alta de la evidencia no dejó rastro");
     }
     return evidence;
+  },
+
+  /**
+   * ¿Cuántos de estos cargos son ACTIVOS y de ESTA unidad? Debe igualar el
+   * número de ids distintos antes de aceptar la declaración — un cargo de otra
+   * unidad (o inexistente) tumba el alta con mensaje de negocio, no un 23503.
+   */
+  async countUnitCharges(
+    tx: TxClient,
+    unitId: string,
+    chargeIds: readonly string[],
+  ): Promise<number> {
+    if (chargeIds.length === 0) {
+      return 0;
+    }
+    const result = await tx.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count
+         FROM billing.charges c
+        WHERE c.id = ANY($1::uuid[])
+          AND c.unit_id = $2
+          AND c.status = 'active'`,
+      [[...chargeIds], unitId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
   },
 
   /**
