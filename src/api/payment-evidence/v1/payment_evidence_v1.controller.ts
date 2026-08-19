@@ -24,7 +24,7 @@ const PG_MESSAGES = {
   conflict:
     "El mismo cargo aparece más de una vez en las aplicaciones, o el pago ya respalda otra evidencia.",
   check:
-    "La evidencia ya fue atendida, o los cargos —y la caja destino— no son todos de su comunidad.",
+    "La evidencia ya fue atendida, algún monto excede el saldo de su cargo, o los cargos —y la caja destino— no son todos de su comunidad.",
   notFound: "La evidencia, alguno de los cargos o la caja destino no existe o no está activo.",
   reference: "La unidad o la persona no existe o no pertenece a esa comunidad.",
 } as const;

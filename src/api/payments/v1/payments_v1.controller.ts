@@ -23,12 +23,13 @@ import {
 
 const PG_MESSAGES = {
   conflict: "El mismo cargo aparece más de una vez en las aplicaciones.",
-  // check_violation cubre tres reglas de la sp: la suma exacta (que el
+  // check_violation cubre cuatro reglas de la sp: la suma exacta (que el
   // controller ya validó, así que en la práctica no llega), el reparto entre
-  // comunidades y la caja de otra comunidad. El mensaje nombra las dos que sí
-  // puede provocar quien captura.
+  // comunidades, la caja de otra comunidad y el TOPE POR CARGO (ninguna
+  // aplicación puede exceder el saldo restante de su cargo). El mensaje nombra
+  // las que sí puede provocar quien captura.
   check:
-    "Un pago pertenece a UNA comunidad: revisa que todos los cargos —y la caja destino— sean de la misma. Si recibiste dinero de dos comunidades, regístralo como dos pagos.",
+    "Revisa el reparto: ningún monto puede exceder el saldo de su cargo, y todos los cargos —y la caja destino— deben ser de la MISMA comunidad (dinero de dos comunidades son dos pagos).",
   notFound: "Alguno de los cargos —o la caja destino— no existe o no está activo.",
 } as const;
 
