@@ -40,13 +40,14 @@ residguard_ws/
 │   │   ├── fee-periods/v1/          ← periodos de cuota (lista/alta/baja; la generación de cargos los crea sola)
 │   │   ├── charges/v1/              ← cargos por comunidad/unidad (lectura con saldo) + registro multi-unidad + cargo suelto (sin periodo) + anulación
 │   │   ├── payments/v1/             ← pagos (sp_register_payment) + anulación
+│   │   ├── payment-evidence/v1/     ← evidencias de pago, lado OPERACIÓN: bandeja, captura en ventanilla, verificar (= registrar el pago) y rechazar
 │   │   ├── waivers/v1/              ← condonaciones por cargo (sp_waive_charge) + historial + reversión
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
 │   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
 │   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
 │   │   ├── visits/v1/               ← registro previo de visitas, lado OPERACIÓN: bitácora de la comunidad, consulta de un código en caseta y check-in
-│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/visits): alcance por vínculo del padrón, no por community_members
+│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/visits, /me/payment-evidence): alcance por vínculo del padrón, no por community_members
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -59,6 +60,8 @@ residguard_ws/
 │   │   │   └── community_access.ts  ← alcance por comunidad (preHandlers + helpers)
 │   │   ├── platform/
 │   │   │   └── tenant_admin_client.ts ← cliente de la superficie tenant de admin_ws (invitaciones)
+│   │   ├── storage/
+│   │   │   └── storage_client.ts    ← cliente server-to-server (X-Api-Key) de storage-service: valida archivos de evidencias y emite enlaces firmados
 │   │   └── http/                    ← error handler + traducción de errores PG
 │   ├── config.ts
 │   └── server.ts
@@ -96,7 +99,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (46 en total). La baja es lógica y
+   - Códigos: convención `recurso.accion` (61 funcionales + 23 de pantalla). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke`, `charges.revoke`, `waivers.create` y
@@ -137,6 +140,17 @@ responsabilidad por archivo que en `admin_ws`.
      anidada, así que el alcance lo valida el controller: consultar y anular se
      miden contra `p.community_id`; **registrar** se valida cargo por cargo,
      porque la comunidad del depósito no existe hasta que la sp la deriva.
+   - **Evidencias de pago: mismas dos superficies que visitas.**
+     `payment-evidence/v1` (bandeja del operador) mide el alcance contra la
+     comunidad de la evidencia en el controller (la ruta no está anidada, igual
+     que payments); `/me/payment-evidence` usa la cadena del padrón y deriva la
+     comunidad de la unidad. VERIFICAR exige `payments.create` (verificar ES
+     registrar un pago — no existe `payment_evidence.verify`); rechazar,
+     `payment_evidence.update` con motivo obligatorio. Los ARCHIVOS viven en
+     storage-service: la SPA los sube directo con el Bearer del usuario
+     (`storage.files.write`) y las descargas son enlaces firmados que emite
+     este servicio TRAS validar el alcance — el RBAC de storage es por app, no
+     por recurso, y la frontera por recurso vive aquí.
    - **Visitas: dos superficies, dos fronteras, un solo núcleo.** `visits/v1`
      (bitácora y caseta) va anidado bajo `/communities/:communityId` con
      `requireCommunityAccess()`; `/me/visits` resuelve la pertenencia por la
@@ -164,7 +178,11 @@ responsabilidad por archivo que en `admin_ws`.
   cero SQL fuera de `withTransaction`.
 - **Vías sancionadas de billing**: registrar pago →
   `billing.sp_register_payment`; anular pago → soft-delete de aplicaciones +
-  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; condonar →
+  encabezado + `billing.sp_refresh_charge_payment_status` por cargo; verificar evidencia de pago →
+  `billing.sp_verify_payment_evidence` (bloquea la evidencia, delega en
+  `sp_register_payment` y estampa el vínculo; anular ese pago REGRESA la
+  evidencia a `pending_review` en la misma transacción de la anulación);
+  condonar →
   `billing.sp_waive_charge`; revertir condonación → soft-delete del waiver +
   `sp_refresh_charge_payment_status`; cargo suelto → `billing.sp_add_unit_charge`;
   saldo de comunidad → `billing.fn_get_community_balance`. `payment_status`
@@ -251,6 +269,9 @@ número JSON (NUMERIC(14,2) en BD).
 | `DB_TIMEZONE` | Zona de operación fijada en cada sesión de PG — default `America/Mexico_City`. Solo afecta el recorte a día (`::date`, `CURRENT_DATE`, cortes de saldo), no el instante almacenado. También decide qué día y qué hora se comparan contra la vigencia de un pase de visita |
 | `VISIT_MAX_VALIDITY_DAYS` | Tope de vigencia de un pase de visita — default 180. Política de negocio, no integridad: la BD no lo conoce |
 | `VISIT_MAX_ACTIVE_PER_UNIT` | Tope de pases vigentes por unidad — default 100. Freno anti-abuso del portal |
+| `STORAGE_WS_BASE_URL` | storage-service: validación de archivos de evidencias y enlaces firmados de descarga (canal `X-Api-Key`); https en producción |
+| `STORAGE_API_KEY` | API key emitida por storage-service para (cliente, residguard-app). ⚠ POR TENANT: con más de un cliente real debe volverse un mapa |
+| `STORAGE_LINK_TTL_SEC` | Vigencia de los enlaces firmados de descarga — default 300 |
 | `PORT` / `HOST` | Servicio (default 3003) |
 | `LOG_LEVEL` | pino |
 

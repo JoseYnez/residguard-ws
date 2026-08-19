@@ -47,3 +47,15 @@ export {
   visitListV1V,
   visitV1V,
 } from "../../visits/v1/visits_v1.verifier";
+
+// Las evidencias de pago reusan el contrato del recurso payment-evidence: el
+// comprobante que ve el residente y el que atiende el operador son el MISMO
+// objeto — cambia la frontera (la cadena del padrón), no el contrato.
+export {
+  createMyEvidenceV1V,
+  evidenceFileLinkV1V,
+  evidenceFileParamV1V,
+  evidenceListV1V,
+  evidenceV1V,
+  listMyEvidenceQueryV1V,
+} from "../../payment-evidence/v1/payment_evidence_v1.verifier";

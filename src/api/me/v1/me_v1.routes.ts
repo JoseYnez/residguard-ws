@@ -6,8 +6,14 @@ import { requirePermission } from "../../../core/auth/require_permission";
 import { idParamV1V, unitIdParamV1V } from "../../common/common_v1.verifier";
 import { meController } from "./me_v1.controller";
 import {
+  createMyEvidenceV1V,
   createVisitV1V,
   errorResponseV1V,
+  evidenceFileLinkV1V,
+  evidenceFileParamV1V,
+  evidenceListV1V,
+  evidenceV1V,
+  listMyEvidenceQueryV1V,
   listMyVisitsQueryV1V,
   myUnitListV1V,
   unitChargeStatementV1V,
@@ -217,6 +223,117 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(200).send(cancelled);
+    },
+  );
+
+  // --- Mis comprobantes de pago ----------------------------------------------
+  // El residente ENVÍA la evidencia de un pago que ya hizo; el operador la
+  // atiende en su bandeja (verificar = registrar el pago | rechazar). Los
+  // ARCHIVOS no pasan por aquí: la SPA los sube directo a storage-service con
+  // el Bearer del usuario y este servicio recibe solo los ids — los valida
+  // contra storage y espeja su metadata. La comunidad, como en visitas, se
+  // DERIVA de la unidad; el residente no la conoce ni tiene por qué.
+
+  // Mis comprobantes, con su estado (¿ya lo vieron? ¿me lo rechazaron?).
+  app.get(
+    "/me/payment-evidence",
+    {
+      schema: {
+        querystring: listMyEvidenceQueryV1V,
+        response: { 200: evidenceListV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfPaymentEvidenceRead)],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const { items, total } = await meController.listMyEvidence(req, {
+        page: q.page,
+        pageSize: q.pageSize,
+        unitId: q.unitId ?? null,
+        status: q.status ?? null,
+      });
+      return reply.code(200).send({ items, total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
+  // Un comprobante mío. Misma forma que ve el operador (evidenceV1V): es el
+  // mismo hecho; cambia la frontera, no el contrato.
+  app.get(
+    "/me/payment-evidence/:id",
+    {
+      schema: {
+        params: idParamV1V,
+        response: { 200: evidenceV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfPaymentEvidenceRead)],
+    },
+    async (req, reply) => {
+      const found = await meController.myEvidence(req, req.params.id);
+      if (found === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(found);
+    },
+  );
+
+  // Enlace firmado de descarga de un archivo mío (para re-ver lo que envié).
+  app.get(
+    "/me/payment-evidence/:id/files/:fileId/link",
+    {
+      schema: {
+        params: evidenceFileParamV1V,
+        response: { 200: evidenceFileLinkV1V, 404: errorResponseV1V, 503: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfPaymentEvidenceRead)],
+    },
+    async (req, reply) => {
+      const link = await meController.myEvidenceFileLink(req, req.params.id, req.params.fileId);
+      if (link === "not_found") {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (link === "unavailable") {
+        return reply.code(503).send({
+          error: "storage_unavailable",
+          message: "El almacén de archivos no respondió. Intenta de nuevo.",
+        });
+      }
+      return reply.code(200).send(link);
+    },
+  );
+
+  // Enviar un comprobante. Nace pending_review; no hay edición ni cancelación
+  // del residente — si fue un error, el operador lo rechaza y se envía otro.
+  app.post(
+    "/me/payment-evidence",
+    {
+      schema: {
+        body: createMyEvidenceV1V,
+        response: {
+          201: evidenceV1V,
+          400: errorResponseV1V,
+          404: errorResponseV1V,
+        },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfPaymentEvidenceCreate)],
+    },
+    async (req, reply) => {
+      const b = req.body;
+      const result = await meController.createMyEvidence(req, {
+        unitId: b.unitId,
+        declaredAmount: b.declaredAmount,
+        declaredPaidAt: b.declaredPaidAt ?? null,
+        declaredMethod: b.declaredMethod,
+        reference: b.reference ?? null,
+        notes: b.notes ?? null,
+        fileIds: b.fileIds,
+      });
+      if (result === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (!result.ok) {
+        return reply.code(400).send({ error: result.error.kind, message: result.error.message });
+      }
+      return reply.code(201).send(result.value);
     },
   );
 }

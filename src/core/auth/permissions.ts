@@ -101,6 +101,17 @@ export const PERMISSIONS = {
     paymentsCreate: "payments.create",
     paymentsRevoke: "payments.revoke",
 
+    // Evidencias de pago: el comprobante que el residente ENVIA (o ventanilla
+    // captura) diciendo que pago. `.update` autoriza RECHAZAR (con motivo):
+    // no hay edicion de una evidencia — se rechaza y se envia otra, igual que
+    // un pase. VERIFICAR no tiene codigo propio: verificar ES registrar el
+    // pago (billing.sp_verify_payment_evidence delega en sp_register_payment),
+    // asi que esa ruta exige `payments.create` — quien puede registrar pagos
+    // puede verificar evidencias.
+    paymentEvidenceRead: "payment_evidence.read",
+    paymentEvidenceCreate: "payment_evidence.create",
+    paymentEvidenceUpdate: "payment_evidence.update",
+
     // Rubros de gasto.
     expenseCategoriesRead: "expense_categories.read",
     expenseCategoriesCreate: "expense_categories.create",
@@ -163,6 +174,13 @@ export const PERMISSIONS = {
     // Sembrados por admin_project/db/99_patch_residguard_self_service.sql.
     selfUnitsRead: "self_units.read",
     selfStatementRead: "self_statement.read",
+
+    // Comprobantes de pago del residente (rutas /me/payment-evidence). Mismo
+    // alcance que el resto de /me/*: la cadena del padron. Sin `.update`: una
+    // evidencia enviada no se edita ni se cancela — si fue un error, el
+    // operador la rechaza y el residente envia otra.
+    selfPaymentEvidenceRead: "self_payment_evidence.read",
+    selfPaymentEvidenceCreate: "self_payment_evidence.create",
 
     // Registro previo de visitas del residente (rutas /me/visits). Mismo
     // alcance que el resto de /me/*: la cadena del padrón. `.update` autoriza
@@ -232,9 +250,11 @@ export const SCREEN_PERMISSIONS = {
     periodResult: "screens.period_result",
     myUnits: "screens.my_units",
     myStatement: "screens.my_statement",
+    myPayments: "screens.my_payments",
     myVisits: "screens.my_visits",
     visits: "screens.visits",
     gate: "screens.gate",
+    paymentEvidence: "screens.payment_evidence",
 } as const;
 
 /** Unión de los códigos de pantalla. Ningún guard de este servicio los acepta. */

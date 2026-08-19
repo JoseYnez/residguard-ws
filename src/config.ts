@@ -61,6 +61,27 @@ const envV = new V.ObjectNotNull({
     // pases eternos que nadie recuerda haber creado: un recurrente de servicio
     // se renueva, no se emite "para siempre". La BD no lo conoce — es política
     // de negocio, no integridad.
+    // Base de storage-service (sin barra final): donde viven los ARCHIVOS de
+    // las evidencias de pago. La SPA sube directo con el Bearer del usuario;
+    // este servicio usa el canal server-to-server (X-Api-Key) para validar
+    // los archivos que una evidencia declara y para emitir los enlaces
+    // firmados de descarga TRAS validar el alcance de la evidencia — el RBAC
+    // de storage es por app, no por recurso, y la frontera por recurso vive
+    // aqui.
+    STORAGE_WS_BASE_URL: new V.StringNotNull({ minLength: 1 }),
+    // API key emitida por storage-service para el par (cliente, residguard-app).
+    // ⚠ Es POR TENANT: con un solo cliente real basta esta env; el dia que
+    // haya dos, esto debe volverse un mapa tenant → key.
+    STORAGE_API_KEY: new V.StringNotNull({ minLength: 1 }),
+    // Vigencia (segundos) de los enlaces firmados de descarga que este
+    // servicio emite. Corta a proposito: el enlace se pide al momento de ver
+    // el comprobante, no se almacena.
+    STORAGE_LINK_TTL_SEC: new V.NumberNotNull({
+        defaultValue: 300,
+        min: 30,
+        max: 3600,
+        maxDecimalPlaces: 0,
+    }),
     VISIT_MAX_VALIDITY_DAYS: new V.NumberNotNull({
         defaultValue: 180,
         min: 1,
@@ -111,11 +132,22 @@ if (isProd && !env.ADMIN_WS_BASE_URL.startsWith("https://")) {
     process.exit(1);
 }
 
+// A storage viaja la API key del servicio: por HTTP plano un on-path se la
+// queda (y con ella, el bucket completo del cliente).
+if (isProd && !env.STORAGE_WS_BASE_URL.startsWith("https://")) {
+    // eslint-disable-next-line no-console
+    console.error("En producción STORAGE_WS_BASE_URL debe usar https://");
+    process.exit(1);
+}
+
 export const config = {
     databaseUrl: env.DATABASE_URL,
     authWsBaseUrl: env.AUTH_WS_BASE_URL,
     adminWsBaseUrl: env.ADMIN_WS_BASE_URL.replace(/\/+$/u, ""),
     residentRoleCode: env.RESIDENT_ROLE_CODE,
+    storageWsBaseUrl: env.STORAGE_WS_BASE_URL.replace(/\/+$/u, ""),
+    storageApiKey: env.STORAGE_API_KEY,
+    storageLinkTtlSec: env.STORAGE_LINK_TTL_SEC,
     residguardAppCode: env.RESIDGUARD_APP_CODE,
     permissionsStaleGraceMs: env.PERMISSIONS_STALE_GRACE_MINUTES * 60_000,
     corsOrigins: env.CORS_ORIGINS.split(",")

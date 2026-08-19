@@ -1,4 +1,5 @@
 import type { TxClient } from "../../../core/db/with_transaction";
+import { paymentEvidenceRepository } from "../../payment-evidence/v1/payment_evidence_v1.repository";
 
 // Acceso a datos del recurso payments. El alta va SIEMPRE por
 // billing.sp_register_payment (vía sancionada: valida suma exacta, bloquea
@@ -495,6 +496,12 @@ export const paymentsRepository = {
     for (const chargeId of chargeIds) {
       await tx.query(`CALL billing.sp_refresh_charge_payment_status($1)`, [chargeId]);
     }
+
+    // Si este pago respaldaba una evidencia verificada, la evidencia REGRESA a
+    // pending_review en esta MISMA transacción: un "verificado" apuntando a un
+    // pago anulado sería mentira, y el comprobante sigue pendiente de que
+    // alguien lo atienda (de nuevo). El rastro queda en audit.event_log.
+    await paymentEvidenceRepository.resetByPaymentId(tx, id);
     return true;
   },
 };
