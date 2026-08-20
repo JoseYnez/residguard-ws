@@ -11,7 +11,11 @@ import {
 } from "../../visits/v1/visits_v1.controller";
 import type { Visit, VisitEvent } from "../../visits/v1/visits_v1.repository";
 import { chargesRepository, type Charge } from "../../charges/v1/charges_v1.repository";
-import { resolveFiles } from "../../payment-evidence/v1/payment_evidence_v1.controller";
+import {
+  claimedChargesError,
+  resolveFiles,
+  type ClaimedChargeInput,
+} from "../../payment-evidence/v1/payment_evidence_v1.controller";
 import {
   paymentEvidenceRepository,
   type Evidence,
@@ -192,7 +196,7 @@ export const meController = {
       readonly reference?: string | null;
       readonly notes?: string | null;
       readonly fileIds: readonly string[];
-      readonly chargeIds: readonly string[];
+      readonly claimedCharges: readonly ClaimedChargeInput[];
     },
   ): Promise<MutationResult<Evidence> | null> {
     const claims = requireAuth(req);
@@ -208,16 +212,20 @@ export const meController = {
         if (scope === null) {
           return null;
         }
-        // Los cargos declarados deben ser de ESTA unidad (que ya es mía):
-        // misma regla que la captura del operador.
-        const distinctCharges = [...new Set(input.chargeIds)];
-        if (distinctCharges.length > 0) {
+        // Los cargos declarados deben ser de ESTA unidad (que ya es mía), sin
+        // repetidos y con la suma dentro del monto declarado: mismas reglas
+        // que la captura del operador.
+        const claimError = claimedChargesError(input.claimedCharges, input.declaredAmount);
+        if (claimError !== null) {
+          return { ok: false as const, error: { kind: "invalid" as const, message: claimError } };
+        }
+        if (input.claimedCharges.length > 0) {
           const owned = await paymentEvidenceRepository.countUnitCharges(
             tx,
             input.unitId,
-            distinctCharges,
+            input.claimedCharges.map((c) => c.chargeId),
           );
-          if (owned !== distinctCharges.length) {
+          if (owned !== input.claimedCharges.length) {
             return {
               ok: false as const,
               error: {
@@ -239,7 +247,7 @@ export const meController = {
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           files: resolved.files,
-          chargeIds: distinctCharges,
+          claimedCharges: input.claimedCharges,
         });
         return { ok: true as const, value: evidence };
       });

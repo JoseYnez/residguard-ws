@@ -364,7 +364,7 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         reference: b.reference ?? null,
         notes: b.notes ?? null,
         fileIds: b.fileIds,
-        chargeIds: b.chargeIds ?? [],
+        claimedCharges: b.claimedCharges ?? [],
       });
       if (result === null) {
         return reply.code(404).send({ error: "not_found", message: null });

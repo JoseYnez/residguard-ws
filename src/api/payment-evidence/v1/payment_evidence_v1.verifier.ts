@@ -34,6 +34,22 @@ const declaredFields = {
   notes: new V.String({ maxLength: 1000 }),
 };
 
+// Cargos que DICE estar cubriendo y CUANTO de cada uno (parcialidades). Sigue
+// siendo declaración — el reparto real es del operador al verificar, que abre
+// su formulario con exactamente este reparto. El controller valida además que
+// sean cargos de LA UNIDAD y que la suma no exceda declaredAmount.
+const claimedChargesField = () =>
+  new V.Array(
+    new V.ObjectNotNull(
+      {
+        chargeId: new V.StringNotNull({ regex: UUID_REGEX }),
+        amount: new V.NumberNotNull({ min: 0.01, max: MONEY_MAX, maxDecimalPlaces: 2 }),
+      },
+      { strictMode: true },
+    ),
+    { maxLength: 100 },
+  );
+
 // --- Entrada: enviar (POST /me/payment-evidence) ------------------------------
 // El residente NO reparte a cargos: declara monto/fecha/método y adjunta. Los
 // archivos ya viven en storage (la SPA los subió con el Bearer del usuario);
@@ -47,9 +63,7 @@ export const createMyEvidenceV1V = new V.ObjectNotNull(
       minLength: 1,
       maxLength: EVIDENCE_MAX_FILES,
     }),
-    // Cargos que DICE estar cubriendo (opcional). Solo cuáles, sin montos: el
-    // reparto exacto es del operador al verificar; esto precarga su formulario.
-    chargeIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), { maxLength: 100 }),
+    claimedCharges: claimedChargesField(),
   },
   { strictMode: true },
 );
@@ -66,7 +80,7 @@ export const createEvidenceV1V = new V.ObjectNotNull(
     fileIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), {
       maxLength: EVIDENCE_MAX_FILES,
     }),
-    chargeIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), { maxLength: 100 }),
+    claimedCharges: claimedChargesField(),
   },
   { strictMode: true },
 );
@@ -151,6 +165,8 @@ export const claimedChargeV1V = new V.ObjectNotNull({
   concept: new V.StringNotNull(),
   quantity: new V.NumberNotNull(),
   appliedAmount: new V.NumberNotNull(),
+  // Parcialidad declarada; null en declaraciones previas a la columna.
+  claimedAmount: new V.Number(),
   periodLabel: new V.String(),
   periodStart: new V.String(),
   periodEnd: new V.String(),

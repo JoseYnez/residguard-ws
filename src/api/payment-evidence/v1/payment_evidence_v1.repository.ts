@@ -21,12 +21,14 @@ export interface EvidenceFile {
 }
 
 /** Un cargo que el remitente DIJO cubrir, resuelto EN VIVO (concepto y
- *  periodo vigentes, estatus de cobro actual). */
+ *  periodo vigentes, estatus de cobro actual). `claimedAmount` es la
+ *  parcialidad declarada; null solo en declaraciones previas a la columna. */
 export interface ClaimedCharge {
   readonly chargeId: string;
   readonly concept: string;
   readonly quantity: number;
   readonly appliedAmount: number;
+  readonly claimedAmount: number | null;
   readonly periodLabel: string | null;
   readonly periodStart: string | null;
   readonly periodEnd: string | null;
@@ -78,9 +80,10 @@ export interface CreateEvidenceInput {
   readonly notes: string | null;
   /** Metadata YA validada contra storage (el espejo que se copia). */
   readonly files: readonly StorageFileMetadata[];
-  /** Cargos que el remitente dice cubrir — YA validados por el caller como
-   *  cargos activos de LA UNIDAD de la evidencia. */
-  readonly chargeIds: readonly string[];
+  /** Cargos que el remitente dice cubrir, con su parcialidad — YA validados
+   *  por el caller (cargos activos de LA UNIDAD, sin repetidos, suma dentro
+   *  del monto declarado). */
+  readonly claimedCharges: readonly { readonly chargeId: string; readonly amount: number }[];
 }
 
 export interface VerifyEvidenceInput {
@@ -131,6 +134,7 @@ const EVIDENCE_COLUMNS = `
              'concept', f2.concept,
              'quantity', c2.quantity,
              'appliedAmount', c2.applied_amount,
+             'claimedAmount', pec.claimed_amount,
              'periodLabel', fp2.label,
              'periodStart', fp2.period_start,
              'periodEnd', fp2.period_end,
@@ -286,11 +290,12 @@ export const paymentEvidenceRepository = {
       );
     }
 
-    for (const chargeId of input.chargeIds) {
+    for (const claim of input.claimedCharges) {
       await tx.query(
-        `INSERT INTO billing.payment_evidence_charges (customer_id, evidence_id, charge_id)
-         VALUES ($1, $2, $3)`,
-        [input.customerId, evidenceId, chargeId],
+        `INSERT INTO billing.payment_evidence_charges
+            (customer_id, evidence_id, charge_id, claimed_amount)
+         VALUES ($1, $2, $3, $4)`,
+        [input.customerId, evidenceId, claim.chargeId, claim.amount],
       );
     }
 

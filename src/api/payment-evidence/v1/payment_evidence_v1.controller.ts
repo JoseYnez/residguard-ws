@@ -34,6 +34,12 @@ function sumCents(amounts: readonly number[]): number {
   return amounts.reduce((acc, a) => acc + Math.round(a * 100), 0);
 }
 
+/** Un cargo declarado con su parcialidad: cuánto de ese cargo dice cubrir. */
+export interface ClaimedChargeInput {
+  readonly chargeId: string;
+  readonly amount: number;
+}
+
 /** Campos declarados que comparten las dos altas. */
 export interface DeclaredEvidenceInput {
   readonly declaredAmount: number;
@@ -42,8 +48,28 @@ export interface DeclaredEvidenceInput {
   readonly reference?: string | null;
   readonly notes?: string | null;
   readonly fileIds: readonly string[];
-  /** Cargos que el remitente dice cubrir (opcional; solo cuáles, sin montos). */
-  readonly chargeIds: readonly string[];
+  /** Cargos que el remitente dice cubrir y cuánto de cada uno (opcional). */
+  readonly claimedCharges: readonly ClaimedChargeInput[];
+}
+
+/**
+ * Reglas de la declaración de cargos, compartidas por las dos altas: sin
+ * repetidos, y la suma de parcialidades NUNCA excede el monto declarado —
+ * declarar más dinero del que trae el comprobante es la mentira que el
+ * operador tendría que desenredar al verificar. `null` = válida.
+ */
+export function claimedChargesError(
+  claims: readonly ClaimedChargeInput[],
+  declaredAmount: number,
+): string | null {
+  const distinct = new Set(claims.map((c) => c.chargeId));
+  if (distinct.size !== claims.length) {
+    return "Un cargo no puede declararse dos veces en el mismo comprobante.";
+  }
+  if (sumCents(claims.map((c) => c.amount)) > Math.round(declaredAmount * 100)) {
+    return "La suma de los cargos declarados no puede exceder el monto del comprobante.";
+  }
+  return null;
 }
 
 export interface VerifyInput {
@@ -108,14 +134,17 @@ export const paymentEvidenceController = {
         // Los cargos declarados deben ser cargos ACTIVOS de ESTA unidad: la
         // declaración precarga la verificación, y precargar cargos ajenos
         // convertiría un typo en un reparto equivocado.
-        const distinctCharges = [...new Set(input.chargeIds)];
-        if (distinctCharges.length > 0) {
+        const claimError = claimedChargesError(input.claimedCharges, input.declaredAmount);
+        if (claimError !== null) {
+          return { ok: false as const, error: { kind: "invalid" as const, message: claimError } };
+        }
+        if (input.claimedCharges.length > 0) {
           const owned = await paymentEvidenceRepository.countUnitCharges(
             tx,
             input.unitId,
-            distinctCharges,
+            input.claimedCharges.map((c) => c.chargeId),
           );
-          if (owned !== distinctCharges.length) {
+          if (owned !== input.claimedCharges.length) {
             return {
               ok: false as const,
               error: {
@@ -137,7 +166,7 @@ export const paymentEvidenceController = {
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           files: resolved.files,
-          chargeIds: distinctCharges,
+          claimedCharges: input.claimedCharges,
         });
         return { ok: true as const, value: evidence };
       });
