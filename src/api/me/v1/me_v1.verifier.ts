@@ -1,5 +1,5 @@
 import { Verifiers as V } from "structure-verifier";
-import { errorResponseV1V } from "../../common/common_v1.verifier";
+import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifier";
 import { unitChargeStatementV1V, unitStatementQueryV1V } from "../../reports/v1/reports_v1.verifier";
 
 // Contratos del recurso me/v1: la AUTOCONSULTA del residente. Todo lo que sale
@@ -30,6 +30,33 @@ export const myUnitV1V = new V.ObjectNotNull({
 // páginas para pintar una lista de tres filas.
 export const myUnitListV1V = new V.ObjectNotNull({
   items: new V.ArrayNotNull(myUnitV1V),
+});
+
+// --- Mis pagos registrados ------------------------------------------------------
+// El dinero YA asentado sobre cargos de mis unidades (la evidencia es la
+// promesa; esto es el hecho). Paginado: los pagos se acumulan con los años.
+export const listMyPaymentsQueryV1V = new V.ObjectNotNull(
+  { ...pageQueryFields() },
+  { strictMode: true },
+);
+
+export const myPaymentV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  /** Total del depósito. */
+  amount: new V.NumberNotNull(),
+  /** Lo aplicado a MIS unidades (≤ amount cuando el depósito cubrió más). */
+  appliedToMyUnits: new V.NumberNotNull(),
+  method: new V.StringNotNull(),
+  reference: new V.String(),
+  paidAt: new V.StringNotNull(),
+  unitCodes: new V.ArrayNotNull(new V.StringNotNull()),
+});
+
+export const myPaymentListV1V = new V.ObjectNotNull({
+  items: new V.ArrayNotNull(myPaymentV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
 });
 
 // El estado de cuenta reusa el contrato COMPLETO de la V2 de reports

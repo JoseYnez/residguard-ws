@@ -21,7 +21,7 @@ import {
   type Evidence,
 } from "../../payment-evidence/v1/payment_evidence_v1.repository";
 import { storageClient } from "../../../core/storage/storage_client";
-import { meRepository, type MyUnit } from "./me_v1.repository";
+import { meRepository, type MyPayment, type MyUnit } from "./me_v1.repository";
 
 // Orquestación del recurso me. No hay preHandler de alcance que garantizar:
 // el "alcance" ES el usuario del token (claims.sub), y la pertenencia de cada
@@ -31,6 +31,17 @@ export const meController = {
   async listMyUnits(req: FastifyRequest): Promise<MyUnit[]> {
     const claims = requireAuth(req);
     return withTransaction(contextFor(req), (tx) => meRepository.listMyUnits(tx, claims.sub));
+  },
+
+  /** Mis pagos REGISTRADOS (dinero aplicado a cargos de mis unidades). */
+  async listMyPayments(
+    req: FastifyRequest,
+    input: { readonly page: number; readonly pageSize: number },
+  ): Promise<{ items: MyPayment[]; total: number }> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.listMyPayments(tx, claims.sub, input),
+    );
   },
 
   /** `null` cuando la unidad no es del usuario (o no existe) → 404 en la route. */

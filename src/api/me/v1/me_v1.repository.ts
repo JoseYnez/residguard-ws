@@ -46,6 +46,30 @@ interface MyUnitRow {
   community_name: string;
 }
 
+/** Un pago REGISTRADO que tocó alguna de mis unidades (ver listMyPayments). */
+export interface MyPayment {
+  readonly id: string;
+  /** Total del depósito. */
+  readonly amount: number;
+  /** Lo aplicado a MIS unidades (≤ amount). */
+  readonly appliedToMyUnits: number;
+  readonly method: string;
+  readonly reference: string | null;
+  readonly paidAt: string;
+  /** Códigos de MIS unidades que el pago cubrió. */
+  readonly unitCodes: string[];
+}
+
+interface MyPaymentRow {
+  id: string;
+  amount: string;
+  method: string;
+  reference: string | null;
+  paid_at: Date;
+  applied_to_mine: string;
+  unit_codes: string[];
+}
+
 // Todo ACTIVO de punta a punta: el vínculo del padrón, la asignación, la
 // unidad y la comunidad. El portal muestra lo vigente; el historial (unidades
 // vendidas, asignaciones cerradas) es de las pantallas de operación.
@@ -129,6 +153,81 @@ export const meRepository = {
       page: input.page,
       pageSize: input.pageSize,
     });
+  },
+
+  /**
+   * Mis PAGOS registrados: los depósitos cuyo dinero se aplicó a cargos de
+   * alguna de MIS unidades. Es la otra mitad de "Mis pagos" — la evidencia es
+   * la promesa, esto es el dinero ya asentado (incluidos los pagos que el
+   * operador registró sin comprobante de por medio).
+   *
+   * `amount` es el total del depósito; `appliedToMyUnits` lo que de él cayó en
+   * mis unidades (difieren si el depósito también cubrió cargos de una unidad
+   * que no es mía). Sin filtro de `charges.status`: el dinero aplicado es
+   * historia de caja aunque el cargo se haya anulado después (misma regla que
+   * los reportes). Paginado, más reciente primero.
+   */
+  async listMyPayments(
+    tx: TxClient,
+    userId: string,
+    input: { readonly page: number; readonly pageSize: number },
+  ): Promise<{ items: MyPayment[]; total: number }> {
+    // DISTINCT: la misma unidad no debe entrar dos veces aunque el padrón la
+    // enlace por más de un camino — duplicaría la suma aplicada.
+    const MY_UNITS_SUBQUERY = `
+      JOIN (
+        SELECT DISTINCT u.id, u.code
+          FROM community.members m
+          JOIN community.unit_members um
+            ON um.member_id = m.id AND um.status = 'active'
+          JOIN community.units u
+            ON u.id = um.unit_id AND u.status = 'active'
+         WHERE m.user_id = $1 AND m.status = 'active'
+      ) mu ON mu.id = ch.unit_id
+    `;
+    const FROM = `
+      FROM billing.payments p
+      JOIN billing.payment_allocations pa
+        ON pa.payment_id = p.id AND pa.status = 'active'
+      JOIN billing.charges ch
+        ON ch.id = pa.charge_id
+      ${MY_UNITS_SUBQUERY}
+     WHERE p.status = 'active'
+    `;
+
+    const totalResult = await tx.query<{ count: string }>(
+      `SELECT count(DISTINCT p.id)::bigint AS count ${FROM}`,
+      [userId],
+    );
+    const total = Number(totalResult.rows[0]?.count ?? 0);
+
+    const itemsResult = await tx.query<MyPaymentRow>(
+      `SELECT p.id,
+              p.amount::text AS amount,
+              p.method::text AS method,
+              p.reference,
+              p.paid_at,
+              SUM(pa.amount)::text AS applied_to_mine,
+              jsonb_agg(DISTINCT mu.code) AS unit_codes
+         ${FROM}
+        GROUP BY p.id, p.amount, p.method, p.reference, p.paid_at, p.created_at
+        ORDER BY p.paid_at DESC, p.created_at DESC
+        LIMIT $2 OFFSET $3`,
+      [userId, input.pageSize, (input.page - 1) * input.pageSize],
+    );
+
+    return {
+      items: itemsResult.rows.map((row) => ({
+        id: row.id,
+        amount: Number(row.amount),
+        appliedToMyUnits: Number(row.applied_to_mine),
+        method: row.method,
+        reference: row.reference,
+        paidAt: row.paid_at.toISOString(),
+        unitCodes: row.unit_codes,
+      })),
+      total,
+    };
   },
 
   // --- Mis visitas -----------------------------------------------------------

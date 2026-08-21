@@ -17,7 +17,9 @@ import {
   evidenceListV1V,
   evidenceV1V,
   listMyEvidenceQueryV1V,
+  listMyPaymentsQueryV1V,
   listMyVisitsQueryV1V,
+  myPaymentListV1V,
   myUnitListV1V,
   unitChargeStatementV1V,
   unitStatementQueryV1V,
@@ -59,6 +61,32 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const items = await meController.listMyUnits(req);
       return reply.code(200).send({ items });
+    },
+  );
+
+  // Mis pagos REGISTRADOS: el dinero ya asentado sobre cargos de mis unidades.
+  // Mismo permiso que el estado de cuenta — leer lo que pagué ES leerlo.
+  app.get(
+    "/me/payments",
+    {
+      schema: {
+        querystring: listMyPaymentsQueryV1V,
+        response: { 200: myPaymentListV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfStatementRead)],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const result = await meController.listMyPayments(req, {
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      return reply.code(200).send({
+        items: result.items,
+        total: result.total,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
     },
   );
 
