@@ -46,6 +46,17 @@ interface MyUnitRow {
   community_name: string;
 }
 
+/** Un cargo MÍO que el pago cubrió (una aplicación, con su contexto legible). */
+export interface MyPaymentCover {
+  /** Concepto de la cuota, con las piezas ("Tarjeta de acceso ×2"). */
+  readonly concept: string;
+  /** Nombre del periodo (label propio o derivado); null = cargo suelto. */
+  readonly period: string | null;
+  readonly unitCode: string;
+  /** Lo que ESTA aplicación puso sobre el cargo (≤ su importe). */
+  readonly amount: number;
+}
+
 /** Un pago REGISTRADO que tocó alguna de mis unidades (ver listMyPayments). */
 export interface MyPayment {
   readonly id: string;
@@ -58,6 +69,8 @@ export interface MyPayment {
   readonly paidAt: string;
   /** Códigos de MIS unidades que el pago cubrió. */
   readonly unitCodes: string[];
+  /** Qué cubrió en MIS unidades, aplicación por aplicación. */
+  readonly covers: MyPaymentCover[];
 }
 
 interface MyPaymentRow {
@@ -68,6 +81,7 @@ interface MyPaymentRow {
   paid_at: Date;
   applied_to_mine: string;
   unit_codes: string[];
+  covers: { concept: string; period: string | null; unitCode: string; amount: number }[];
 }
 
 // Todo ACTIVO de punta a punta: el vínculo del padrón, la asignación, la
@@ -185,12 +199,20 @@ export const meRepository = {
          WHERE m.user_id = $1 AND m.status = 'active'
       ) mu ON mu.id = ch.unit_id
     `;
+    // fees/fee_periods: el "qué cubrió" legible por aplicación — mismo alias
+    // que el estado de cuenta (concepto ×piezas + COALESCE(label, derivado)),
+    // para que el mismo cargo se llame igual en las dos pantallas. LEFT en
+    // fee_periods, siempre: un cargo suelto no tiene periodo.
     const FROM = `
       FROM billing.payments p
       JOIN billing.payment_allocations pa
         ON pa.payment_id = p.id AND pa.status = 'active'
       JOIN billing.charges ch
         ON ch.id = pa.charge_id
+      JOIN billing.fees f
+        ON f.customer_id = ch.customer_id AND f.id = ch.fee_id
+      LEFT JOIN billing.fee_periods fp
+        ON fp.customer_id = ch.customer_id AND fp.id = ch.period_id
       ${MY_UNITS_SUBQUERY}
      WHERE p.status = 'active'
     `;
@@ -208,7 +230,18 @@ export const meRepository = {
               p.reference,
               p.paid_at,
               SUM(pa.amount)::text AS applied_to_mine,
-              jsonb_agg(DISTINCT mu.code) AS unit_codes
+              jsonb_agg(DISTINCT mu.code) AS unit_codes,
+              jsonb_agg(
+                jsonb_build_object(
+                  'concept', f.concept
+                    || CASE WHEN ch.quantity > 1 THEN ' ×' || ch.quantity ELSE '' END,
+                  'period', COALESCE(fp.label,
+                    billing.fn_format_period_es(ch.period_start, ch.period_end)),
+                  'unitCode', mu.code,
+                  'amount', pa.amount
+                )
+                ORDER BY ch.due_date, ch.created_at
+              ) AS covers
          ${FROM}
         GROUP BY p.id, p.amount, p.method, p.reference, p.paid_at, p.created_at
         ORDER BY p.paid_at DESC, p.created_at DESC
@@ -225,6 +258,7 @@ export const meRepository = {
         reference: row.reference,
         paidAt: row.paid_at.toISOString(),
         unitCodes: row.unit_codes,
+        covers: row.covers,
       })),
       total,
     };

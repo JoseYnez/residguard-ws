@@ -40,6 +40,15 @@ export const listMyPaymentsQueryV1V = new V.ObjectNotNull(
   { strictMode: true },
 );
 
+/** Un cargo mío que el pago cubrió: concepto + periodo legibles y lo aplicado. */
+export const myPaymentCoverV1V = new V.ObjectNotNull({
+  concept: new V.StringNotNull(),
+  /** Nombre del periodo (label o derivado); null = cargo suelto. */
+  period: new V.String(),
+  unitCode: new V.StringNotNull(),
+  amount: new V.NumberNotNull(),
+});
+
 export const myPaymentV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
   /** Total del depósito. */
@@ -50,6 +59,8 @@ export const myPaymentV1V = new V.ObjectNotNull({
   reference: new V.String(),
   paidAt: new V.StringNotNull(),
   unitCodes: new V.ArrayNotNull(new V.StringNotNull()),
+  /** Qué cubrió en mis unidades, aplicación por aplicación. */
+  covers: new V.ArrayNotNull(myPaymentCoverV1V),
 });
 
 export const myPaymentListV1V = new V.ObjectNotNull({
