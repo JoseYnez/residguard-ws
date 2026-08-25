@@ -3,6 +3,7 @@ import {
     errorResponseV1V,
     ISO_DATE_REGEX,
     pageQueryFields,
+    UUID_REGEX,
 } from "../../common/common_v1.verifier";
 
 // Contratos del dominio `access`. El contrato del PASE es uno solo y lo
@@ -116,6 +117,18 @@ export const visitVerdictV1V = new V.ObjectNotNull({
     contacts: new V.ArrayNotNull(visitContactV1V),
 });
 
+/** Tope de fotos por entrada. Más que esto ya no documenta: estorba en caseta. */
+export const GATE_PHOTO_MAX_FILES = 6;
+
+// --- Salida: una foto de un evento --------------------------------------------
+// Solo lo que la bitácora pinta; el storage_file_id no viaja — la descarga es
+// SIEMPRE por el enlace firmado que emite este servicio tras validar alcance.
+export const visitEventFileV1V = new V.ObjectNotNull({
+    id: new V.StringNotNull(),
+    filename: new V.StringNotNull(),
+    contentType: new V.StringNotNull(),
+});
+
 // --- Salida: un evento de la bitácora ----------------------------------------
 export const visitEventV1V = new V.ObjectNotNull({
     id: new V.StringNotNull(),
@@ -134,6 +147,10 @@ export const visitEventV1V = new V.ObjectNotNull({
     /** Nombre del usuario que lo registró (espejo core.users); NULL si fue un
      *  dispositivo. NO es un campo capturado: sale de created_by. */
     recordedBy: new V.String(),
+    /** Evidencia fotográfica de la entrada. Vacío en salidas y dispositivos. */
+    files: new V.ArrayNotNull(visitEventFileV1V),
+    /** Motivo de una entrada registrada SIN foto (el camino de escape). */
+    noEvidenceReason: new V.String(),
 });
 
 export const visitDetailV1V = new V.ObjectNotNull({
@@ -169,8 +186,10 @@ export const visitCodeParamV1V = new V.ObjectNotNull(
 );
 
 // --- Entrada: registrar la entrada -------------------------------------------
-// Todo opcional: en caseta lo normal es un toque al botón. Lo que se captura
-// aquí (y no en el pase) es lo que un humano SÍ verificó al abrir.
+// Todo opcional EN LA FORMA: en caseta lo normal es un toque al botón. Lo que
+// se captura aquí (y no en el pase) es lo que un humano SÍ verificó al abrir.
+// La excepción es la EVIDENCIA: el controller exige fotos O motivo — nunca
+// ninguno y nunca ambos —, regla de negocio que el verifier no puede expresar.
 export const checkInVisitV1V = new V.ObjectNotNull(
     {
         /** Quién llegó de verdad. Si no viene, hereda la etiqueta del pase. */
@@ -181,6 +200,12 @@ export const checkInVisitV1V = new V.ObjectNotNull(
         vehiclePlate: new V.String({ maxLength: 20 }),
         gate: new V.String({ maxLength: 60 }),
         notes: new V.String({ maxLength: 500 }),
+        /** Fotos ya subidas a storage por la SPA (Bearer del vigilante). */
+        fileIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), {
+            maxLength: GATE_PHOTO_MAX_FILES,
+        }),
+        /** Por qué esta entrada va SIN foto. Obligatorio si no hay fileIds. */
+        noEvidenceReason: new V.String({ maxLength: 300 }),
     },
     { strictMode: true },
 );
@@ -240,5 +265,32 @@ export const listMyVisitsQueryV1V = new V.ObjectNotNull(
     },
     { strictMode: true },
 );
+
+// --- Enlace firmado de una foto de la bitácora --------------------------------
+// La descarga es SIN credencial hasta que vence: la SPA lo pide al momento de
+// mostrar la foto y no lo almacena — misma mecánica que las evidencias de pago.
+export const visitEventFileParamV1V = new V.ObjectNotNull(
+    {
+        communityId: new V.StringNotNull({ regex: UUID_REGEX }),
+        id: new V.StringNotNull({ regex: UUID_REGEX }),
+        eventId: new V.StringNotNull({ regex: UUID_REGEX }),
+        fileId: new V.StringNotNull({ regex: UUID_REGEX }),
+    },
+    { strictMode: true },
+);
+
+export const myVisitEventFileParamV1V = new V.ObjectNotNull(
+    {
+        id: new V.StringNotNull({ regex: UUID_REGEX }),
+        eventId: new V.StringNotNull({ regex: UUID_REGEX }),
+        fileId: new V.StringNotNull({ regex: UUID_REGEX }),
+    },
+    { strictMode: true },
+);
+
+export const visitEventFileLinkV1V = new V.ObjectNotNull({
+    url: new V.StringNotNull(),
+    expiresAt: new V.StringNotNull(),
+});
 
 export { errorResponseV1V };

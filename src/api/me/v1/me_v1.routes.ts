@@ -21,9 +21,11 @@ import {
   listMyVisitsQueryV1V,
   myPaymentListV1V,
   myUnitListV1V,
+  myVisitEventFileParamV1V,
   unitChargeStatementV1V,
   unitStatementQueryV1V,
   visitDetailV1V,
+  visitEventFileLinkV1V,
   visitListV1V,
   visitV1V,
 } from "./me_v1.verifier";
@@ -185,6 +187,37 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         return reply.code(404).send({ error: "not_found", message: null });
       }
       return reply.code(200).send(detail);
+    },
+  );
+
+  // Enlace firmado de descarga de una foto de la bitácora de un pase mío: el
+  // residente viendo QUIÉN llegó con su código. Mismo permiso que leer el pase.
+  app.get(
+    "/me/visits/:id/events/:eventId/files/:fileId/link",
+    {
+      schema: {
+        params: myVisitEventFileParamV1V,
+        response: { 200: visitEventFileLinkV1V, 404: errorResponseV1V, 503: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfVisitsRead)],
+    },
+    async (req, reply) => {
+      const link = await meController.myVisitEventFileLink(
+        req,
+        req.params.id,
+        req.params.eventId,
+        req.params.fileId,
+      );
+      if (link === "not_found") {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (link === "unavailable") {
+        return reply.code(503).send({
+          error: "storage_unavailable",
+          message: "El almacén de archivos no respondió. Intenta de nuevo.",
+        });
+      }
+      return reply.code(200).send(link);
     },
   );
 

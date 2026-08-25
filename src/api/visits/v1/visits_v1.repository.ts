@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { TxClient } from "../../../core/db/with_transaction";
+import type { StorageFileMetadata } from "../../../core/storage/storage_client";
 
 // Acceso a datos del dominio `access`: el pase pre-registrado (access.visits) y
 // la bitácora de caseta (access.visit_events).
@@ -109,6 +110,15 @@ export interface Visit {
     readonly updatedAt: string;
 }
 
+/** Una foto de la bitácora, como la pinta el cliente. El storage_file_id no
+ *  sale de aquí: la descarga es SIEMPRE por enlace firmado tras validar
+ *  alcance (mismo criterio que payment_evidence_files). */
+export interface VisitEventFile {
+    readonly id: string;
+    readonly filename: string;
+    readonly contentType: string;
+}
+
 export interface VisitEvent {
     readonly id: string;
     readonly visitId: string | null;
@@ -125,6 +135,10 @@ export interface VisitEvent {
     readonly notes: string | null;
     /** Nombre del usuario que lo registró; NULL en eventos de dispositivo. */
     readonly recordedBy: string | null;
+    /** Evidencia fotográfica de la entrada. Vacío en salidas y dispositivos. */
+    readonly files: VisitEventFile[];
+    /** Motivo de una entrada registrada SIN foto (el camino de escape). */
+    readonly noEvidenceReason: string | null;
 }
 
 export interface CreateVisitInput {
@@ -565,6 +579,11 @@ export const visitsRepository = {
             readonly vehiclePlate: string | null;
             readonly gate: string | null;
             readonly notes: string | null;
+            /** Fotos YA validadas contra storage por el controller (espejo a
+             *  copiar). El repositorio solo persiste; la regla fotos-o-motivo
+             *  y la validación server-to-server no viven aquí. */
+            readonly files: readonly StorageFileMetadata[];
+            readonly noEvidenceReason: string | null;
         },
     ): Promise<VisitWithVerdict | null> {
         const locked = await tx.query<{ id: string }>(
@@ -586,17 +605,20 @@ export const visitsRepository = {
             return revalidated;
         }
 
-        await tx.query(
+        const inserted = await tx.query<{ id: string; customer_id: string }>(
             `INSERT INTO access.visit_events (
                  customer_id, community_id, visit_id, unit_id,
                  event_type, source, gate,
-                 visitor_name, visitor_document, companions, vehicle_plate, notes
+                 visitor_name, visitor_document, companions, vehicle_plate, notes,
+                 no_evidence_reason
              )
              SELECT v.customer_id, v.community_id, v.id, v.unit_id,
                     'check_in', 'gate', $3,
-                    COALESCE($4, v.visitor_name), $5, COALESCE($6, v.companions), $7, $8
+                    COALESCE($4, v.visitor_name), $5, COALESCE($6, v.companions), $7, $8,
+                    $9
                FROM access.visits v
-              WHERE v.id = $1 AND v.community_id = $2`,
+              WHERE v.id = $1 AND v.community_id = $2
+             RETURNING id, customer_id`,
             [
                 visitId,
                 communityId,
@@ -606,8 +628,31 @@ export const visitsRepository = {
                 input.companions,
                 input.vehiclePlate,
                 input.notes,
+                input.noEvidenceReason,
             ],
         );
+        const event = inserted.rows[0]!;
+
+        // Las fotos, en la MISMA transacción que el evento: una entrada con la
+        // mitad de su evidencia no existe. El espejo de metadata viene de
+        // storage, validado por el controller antes de abrir la transacción.
+        for (const file of input.files) {
+            await tx.query(
+                `INSERT INTO access.visit_event_files
+                   (customer_id, event_id, storage_file_id,
+                    filename, content_type, size_bytes, sha256)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [
+                    event.customer_id,
+                    event.id,
+                    file.id,
+                    file.filename,
+                    file.contentType,
+                    file.sizeBytes,
+                    file.sha256,
+                ],
+            );
+        }
 
         // Relectura tras el INSERT: el conteo de entradas y el estado derivado
         // acaban de cambiar, y el cliente pinta el resultado del check-in.
@@ -713,15 +758,29 @@ export const visitsRepository = {
             vehicle_plate: string | null;
             notes: string | null;
             recorded_by: string | null;
+            no_evidence_reason: string | null;
+            files: VisitEventFile[];
         }>(
             // El usuario que registró NO es un campo capturado: sale de
             // created_by (que el trigger llena desde audit.user_id) contra el
             // espejo core.users. Un LEFT JOIN porque los eventos de dispositivo
-            // no tienen usuario detrás.
+            // no tienen usuario detrás. Las fotos, agregadas por evento — mismo
+            // patrón que los adjuntos de una evidencia de pago.
             `SELECT e.id, e.visit_id, e.unit_id, u.code AS unit_code,
                     e.event_type::text, e.occurred_at, e.source::text, e.gate,
                     e.visitor_name, e.visitor_document, e.companions, e.vehicle_plate, e.notes,
-                    cu.full_name AS recorded_by
+                    cu.full_name AS recorded_by,
+                    e.no_evidence_reason,
+                    COALESCE((
+                      SELECT jsonb_agg(jsonb_build_object(
+                               'id', f.id, 'filename', f.filename,
+                               'contentType', f.content_type)
+                             ORDER BY f.created_at)
+                        FROM access.visit_event_files f
+                       WHERE f.customer_id = e.customer_id
+                         AND f.event_id = e.id
+                         AND f.status = 'active'
+                    ), '[]'::jsonb) AS files
                FROM access.visit_events e
                JOIN community.units u ON u.id = e.unit_id
                LEFT JOIN core.users cu ON cu.id = e.created_by AND cu.customer_id = e.customer_id
@@ -744,7 +803,33 @@ export const visitsRepository = {
             vehiclePlate: row.vehicle_plate,
             notes: row.notes,
             recordedBy: row.recorded_by,
+            files: row.files,
+            noEvidenceReason: row.no_evidence_reason,
         }));
+    },
+
+    /**
+     * La referencia a storage de una foto de la bitácora. El caller YA validó
+     * el alcance (la comunidad, o la propiedad por la cadena del padrón) — este
+     * lookup solo confirma que el archivo pertenece a ese evento y ese pase.
+     */
+    async getEventFileRef(
+        tx: TxClient,
+        communityId: string,
+        visitId: string,
+        eventId: string,
+        fileId: string,
+    ): Promise<{ storageFileId: string } | null> {
+        const result = await tx.query<{ storage_file_id: string }>(
+            `SELECT f.storage_file_id
+               FROM access.visit_event_files f
+               JOIN access.visit_events e ON e.id = f.event_id AND e.customer_id = f.customer_id
+              WHERE f.id = $1 AND f.event_id = $2 AND f.status = 'active'
+                AND e.visit_id = $3 AND e.community_id = $4 AND e.status = 'active'`,
+            [fileId, eventId, visitId, communityId],
+        );
+        const row = result.rows[0];
+        return row === undefined ? null : { storageFileId: row.storage_file_id };
     },
 
     /**

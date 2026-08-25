@@ -3,6 +3,7 @@ import { config } from "../../../config";
 import { contextFor } from "../../../core/auth/community_access";
 import { withTransaction } from "../../../core/db/with_transaction";
 import type { BusinessError } from "../../../core/http/pg_errors";
+import { storageClient, type StorageFileMetadata } from "../../../core/storage/storage_client";
 import {
     visitsRepository,
     type ListVisitsInput,
@@ -164,6 +165,79 @@ export function normalizeVisitInput(
     };
 }
 
+// --- Evidencia fotográfica de la entrada --------------------------------------
+
+/** Lo que una foto de caseta puede ser. Sin PDF a propósito: esto documenta lo
+ *  que había frente a la barrera, y un PDF no sale de una cámara. */
+const GATE_PHOTO_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+/**
+ * La regla que el verifier no puede expresar: la entrada exige AL MENOS una
+ * foto, o el motivo por el que se registra sin ella — nunca ninguno de los dos
+ * (la obligatoriedad es el punto de la feature) y nunca ambos (un motivo junto
+ * a fotos es un dato que miente). Devuelve el mensaje del 400, o null si la
+ * combinación es legal.
+ *
+ * Aplica SOLO aquí, en el endpoint de caseta: las salidas heredan su evento de
+ * entrada y los eventos de dispositivo (checadores futuros) no pasan por esta
+ * ruta — exentos por construcción, no por excepción.
+ */
+export function evidenceRuleError(
+    fileIds: readonly string[],
+    noEvidenceReason: string,
+): string | null {
+    if (new Set(fileIds).size !== fileIds.length) {
+        return "La misma foto no puede adjuntarse dos veces a la entrada.";
+    }
+    if (fileIds.length === 0 && noEvidenceReason === "") {
+        return "La entrada necesita al menos una foto, o el motivo por el que se registra sin ella.";
+    }
+    if (fileIds.length > 0 && noEvidenceReason !== "") {
+        return "Una entrada con fotos no lleva motivo de 'sin evidencia': manda uno u otro.";
+    }
+    return null;
+}
+
+/**
+ * Valida contra storage cada foto que la entrada declara y devuelve su metadata
+ * (el espejo a copiar). Un id inexistente —o un archivo que no es imagen— tumba
+ * el registro completo ANTES de abrir la transacción: no se abre una barrera
+ * prometiendo evidencia que no existe. Misma mecánica que las evidencias de
+ * pago, con la lista de tipos acotada a fotos.
+ */
+async function resolveGatePhotos(
+    fileIds: readonly string[],
+): Promise<{ ok: true; files: StorageFileMetadata[] } | { ok: false; message: string }> {
+    const files: StorageFileMetadata[] = [];
+    for (const fileId of fileIds) {
+        const result = await storageClient.getFile(fileId);
+        if (!result.ok) {
+            return {
+                ok: false,
+                message:
+                    result.status === 404
+                        ? "Alguna de las fotos no existe en el almacén. Vuelve a tomarla."
+                        : "No se pudo validar la foto contra el almacén de archivos. Intenta de nuevo.",
+            };
+        }
+        if (!GATE_PHOTO_CONTENT_TYPES.has(result.value.contentType)) {
+            return {
+                ok: false,
+                message: "La evidencia de caseta debe ser una foto (JPEG, PNG o WebP).",
+            };
+        }
+        files.push(result.value);
+    }
+    return { ok: true, files };
+}
+
+/** El check-in ahora puede fallar por NEGOCIO (la regla de evidencia) además
+ *  de por veredicto: `ok: false` es el 400, el veredicto sigue viajando en
+ *  `value` y decide entre 201 y 409 como siempre. */
+export type CheckInOutcome =
+    | { readonly ok: true; readonly value: VisitWithVerdict }
+    | { readonly ok: false; readonly error: BusinessError };
+
 export const visitsController = {
     async list(
         req: FastifyRequest,
@@ -200,9 +274,14 @@ export const visitsController = {
     },
 
     /**
-     * Registra la entrada. `null` → 404; un veredicto distinto de `ok` → 409:
-     * el actor VE el pase pero no puede consumirlo ahora, que es exactamente lo
-     * que 409 significa (mismo criterio que anular un cargo con pagos).
+     * Registra la entrada. `null` → 404; `ok: false` → 400 (la regla de
+     * evidencia); un veredicto distinto de `ok` → 409: el actor VE el pase pero
+     * no puede consumirlo ahora, que es exactamente lo que 409 significa (mismo
+     * criterio que anular un cargo con pagos).
+     *
+     * Las fotos se validan contra storage ANTES de abrir la transacción (HTTP
+     * dentro de una tx es tiempo de lock regalado), y sus filas se insertan en
+     * la MISMA transacción que el evento.
      */
     async checkIn(
         req: FastifyRequest,
@@ -215,11 +294,37 @@ export const visitsController = {
             readonly vehiclePlate: string | null;
             readonly gate: string | null;
             readonly notes: string | null;
+            readonly fileIds: readonly string[];
+            readonly noEvidenceReason: string | null;
         },
-    ): Promise<VisitWithVerdict | null> {
-        return withTransaction(contextFor(req), (tx) =>
-            visitsRepository.checkIn(tx, communityId, visitId, input),
+    ): Promise<CheckInOutcome | null> {
+        const reason = input.noEvidenceReason?.trim() ?? "";
+        const ruleError = evidenceRuleError(input.fileIds, reason);
+        if (ruleError !== null) {
+            return { ok: false, error: { kind: "invalid", message: ruleError } };
+        }
+
+        const resolved = await resolveGatePhotos(input.fileIds);
+        if (!resolved.ok) {
+            return { ok: false, error: { kind: "invalid", message: resolved.message } };
+        }
+
+        const result = await withTransaction(contextFor(req), (tx) =>
+            visitsRepository.checkIn(tx, communityId, visitId, {
+                visitorName: input.visitorName,
+                visitorDocument: input.visitorDocument,
+                companions: input.companions,
+                vehiclePlate: input.vehiclePlate,
+                gate: input.gate,
+                notes: input.notes,
+                files: resolved.files,
+                noEvidenceReason: reason === "" ? null : reason,
+            }),
         );
+        if (result === null) {
+            return null;
+        }
+        return { ok: true, value: result };
     },
 
     /**
@@ -240,5 +345,32 @@ export const visitsController = {
         return withTransaction(contextFor(req), (tx) =>
             visitsRepository.checkOut(tx, communityId, visitId, input),
         );
+    },
+
+    /**
+     * Enlace firmado de descarga de una foto de la bitácora. El alcance por
+     * comunidad ya lo garantizó requireCommunityAccess; el lookup solo confirma
+     * que el archivo pertenece a ese evento y ese pase — y entonces este
+     * servicio emite el enlace con su API key. La SPA nunca descarga de storage
+     * con el Bearer: el RBAC de storage es por app, no por recurso.
+     */
+    async eventFileLink(
+        req: FastifyRequest,
+        communityId: string,
+        visitId: string,
+        eventId: string,
+        fileId: string,
+    ): Promise<{ url: string; expiresAt: string } | "not_found" | "unavailable"> {
+        const ref = await withTransaction(contextFor(req), (tx) =>
+            visitsRepository.getEventFileRef(tx, communityId, visitId, eventId, fileId),
+        );
+        if (ref === null) {
+            return "not_found";
+        }
+        const link = await storageClient.createDownloadLink(ref.storageFileId);
+        if (!link.ok) {
+            return link.status === 404 ? "not_found" : "unavailable";
+        }
+        return link.value;
     },
 };

@@ -9,7 +9,7 @@ import {
   normalizeVisitInput,
   type RawVisitInput,
 } from "../../visits/v1/visits_v1.controller";
-import type { Visit, VisitEvent } from "../../visits/v1/visits_v1.repository";
+import { visitsRepository, type Visit, type VisitEvent } from "../../visits/v1/visits_v1.repository";
 import { chargesRepository, type Charge } from "../../charges/v1/charges_v1.repository";
 import {
   claimedChargesError,
@@ -93,6 +93,37 @@ export const meController = {
     return withTransaction(contextFor(req), (tx) =>
       meRepository.myVisitDetail(tx, claims.sub, visitId),
     );
+  },
+
+  /**
+   * Enlace firmado de descarga de una foto de la bitácora de un pase MÍO — el
+   * residente viendo QUIÉN llegó con su código. Misma mecánica que el lado del
+   * operador: primero la propiedad (myVisit, la cadena del padrón), después el
+   * lookup del archivo con la comunidad que salió del propio pase, y entonces
+   * el enlace con la API key del servicio.
+   */
+  async myVisitEventFileLink(
+    req: FastifyRequest,
+    visitId: string,
+    eventId: string,
+    fileId: string,
+  ): Promise<{ url: string; expiresAt: string } | "not_found" | "unavailable"> {
+    const claims = requireAuth(req);
+    const ref = await withTransaction(contextFor(req), async (tx) => {
+      const mine = await meRepository.myVisit(tx, claims.sub, visitId);
+      if (mine === null) {
+        return null;
+      }
+      return visitsRepository.getEventFileRef(tx, mine.communityId, visitId, eventId, fileId);
+    });
+    if (ref === null) {
+      return "not_found";
+    }
+    const link = await storageClient.createDownloadLink(ref.storageFileId);
+    if (!link.ok) {
+      return link.status === 404 ? "not_found" : "unavailable";
+    }
+    return link.value;
   },
 
   /**

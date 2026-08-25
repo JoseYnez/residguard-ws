@@ -16,6 +16,8 @@ import {
     listVisitsQueryV1V,
     visitCodeParamV1V,
     visitDetailV1V,
+    visitEventFileLinkV1V,
+    visitEventFileParamV1V,
     visitListV1V,
     visitVerdictV1V,
 } from "./visits_v1.verifier";
@@ -127,6 +129,10 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
     // que el guardia vio en pantalla: entre la consulta y el toque al botón el
     // residente pudo cancelar. Si ya no procede → 409 con la razón (el actor ve
     // el pase, pero no puede consumirlo ahora).
+    //
+    // 400 = la regla de evidencia: la entrada exige al menos una foto o el
+    // motivo de registrarla sin ella (nunca ninguno, nunca ambos), y las fotos
+    // deben existir en storage y ser imágenes.
     app.post(
         "/communities/:communityId/visits/:id/entries",
         {
@@ -135,6 +141,7 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 body: checkInVisitV1V,
                 response: {
                     201: visitVerdictV1V,
+                    400: errorResponseV1V,
                     404: errorResponseV1V,
                     409: visitVerdictV1V,
                 },
@@ -154,19 +161,65 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                     vehiclePlate: b.vehiclePlate ?? null,
                     gate: b.gate ?? null,
                     notes: b.notes ?? null,
+                    fileIds: b.fileIds ?? [],
+                    noEvidenceReason: b.noEvidenceReason ?? null,
                 },
             );
             if (result === null) {
                 return reply.code(404).send({ error: "not_found", message: null });
             }
+            if (!result.ok) {
+                return reply
+                    .code(400)
+                    .send({ error: result.error.kind, message: result.error.message });
+            }
+            const verdict = result.value;
             const payload = {
-                visit: result.visit,
-                valid: result.verdict === "ok",
-                reason: result.verdict,
+                visit: verdict.visit,
+                valid: verdict.verdict === "ok",
+                reason: verdict.verdict,
                 timezone: config.dbTimezone,
-                contacts: result.contacts,
+                contacts: verdict.contacts,
             };
-            return reply.code(result.verdict === "ok" ? 201 : 409).send(payload);
+            return reply.code(verdict.verdict === "ok" ? 201 : 409).send(payload);
+        },
+    );
+
+    // Enlace firmado de descarga de una foto de la bitácora. `visits.read`,
+    // como todo lo que solo MUESTRA: quien puede leer la bitácora puede ver su
+    // evidencia. El enlace vence solo (STORAGE_LINK_TTL_SEC) y la SPA lo pide
+    // al momento de mostrar, nunca lo almacena.
+    app.get(
+        "/communities/:communityId/visits/:id/events/:eventId/files/:fileId/link",
+        {
+            schema: {
+                params: visitEventFileParamV1V,
+                response: {
+                    200: visitEventFileLinkV1V,
+                    404: errorResponseV1V,
+                    503: errorResponseV1V,
+                },
+            },
+            preHandler: [requirePermission(PERMISSIONS.visitsRead), requireCommunityAccess()],
+        },
+        async (req, reply) => {
+            const link = await visitsController.eventFileLink(
+                req,
+                req.params.communityId,
+                req.params.id,
+                req.params.eventId,
+                req.params.fileId,
+            );
+            if (link === "not_found") {
+                return reply.code(404).send({ error: "not_found", message: null });
+            }
+            if (link === "unavailable") {
+                return reply.code(503).send({
+                    error: "storage_unavailable",
+                    message: "El almacén de archivos no respondió. Intenta de nuevo.",
+                });
+            }
+            return reply.code(200).send(link);
         },
     );
 
