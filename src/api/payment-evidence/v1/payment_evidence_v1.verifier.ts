@@ -69,13 +69,17 @@ export const createMyEvidenceV1V = new V.ObjectNotNull(
 );
 
 // --- Entrada: capturar en ventanilla (POST /payment-evidence) -----------------
-// El operador sí nombra al miembro (el residente es SIEMPRE él mismo). Los
-// archivos son opcionales: el comprobante en papel que le llevaron no siempre
-// se digitaliza.
+// El operador PUEDE nombrar al miembro (el residente es SIEMPRE él mismo), pero
+// no está obligado: en ventanilla se escoge la UNIDAD, no la persona — quien
+// llega con el comprobante dice "vengo del 426-A". Ausente, el controller lo
+// deriva del padrón de la unidad (el dueño primero); una unidad sin nadie
+// asignado sí falla, porque toda evidencia declara quién paga.
+// Los archivos son opcionales: el comprobante en papel que le llevaron no
+// siempre se digitaliza.
 export const createEvidenceV1V = new V.ObjectNotNull(
   {
     unitId: new V.StringNotNull({ regex: UUID_REGEX }),
-    memberId: new V.StringNotNull({ regex: UUID_REGEX }),
+    memberId: new V.String({ regex: UUID_REGEX }),
     ...declaredFields,
     fileIds: new V.Array(new V.StringNotNull({ regex: UUID_REGEX }), {
       maxLength: EVIDENCE_MAX_FILES,

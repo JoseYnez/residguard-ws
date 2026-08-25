@@ -307,6 +307,39 @@ export const paymentEvidenceRepository = {
   },
 
   /**
+   * Quién paga por esta unidad cuando el operador no nombró a nadie: el padrón
+   * de la unidad, EL DUEÑO PRIMERO.
+   *
+   * El orden no es cosmético — es la respuesta a "¿a nombre de quién queda el
+   * comprobante?" cuando en el mostrador solo se dijo la unidad. Owner antes
+   * que tenant y que resident (el titular de la cuenta es quien responde por
+   * el adeudo); a igualdad de rol, el vínculo más antiguo, y `id` como último
+   * desempate para que dos capturas de la misma unidad no elijan a personas
+   * distintas por el capricho del plan.
+   *
+   * Solo vínculos y personas VIGENTES: una baja del padrón no vuelve a
+   * aparecer firmando recibos. `null` = la unidad no tiene a nadie asignado,
+   * que el controller traduce a un error de negocio (la columna es NOT NULL).
+   */
+  async resolveUnitMember(tx: TxClient, unitId: string): Promise<string | null> {
+    const result = await tx.query<{ member_id: string }>(
+      `SELECT um.member_id
+         FROM community.unit_members um
+         JOIN community.members m
+           ON m.customer_id = um.customer_id
+          AND m.community_id = um.community_id
+          AND m.id = um.member_id
+        WHERE um.unit_id = $1
+          AND um.status = 'active'
+          AND m.status = 'active'
+        ORDER BY (um.member_type = 'owner') DESC, um.created_at, um.id
+        LIMIT 1`,
+      [unitId],
+    );
+    return result.rows[0]?.member_id ?? null;
+  },
+
+  /**
    * ¿Cuántos de estos cargos son ACTIVOS y de ESTA unidad? Debe igualar el
    * número de ids distintos antes de aceptar la declaración — un cargo de otra
    * unidad (o inexistente) tumba el alta con mensaje de negocio, no un 23503.

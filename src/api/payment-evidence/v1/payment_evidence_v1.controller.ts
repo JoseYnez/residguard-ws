@@ -113,10 +113,19 @@ export const paymentEvidenceController = {
    * Captura en ventanilla (source=operator). La comunidad se deriva de la
    * unidad; el actor debe alcanzarla. El miembro debe ser de esa misma
    * comunidad — la FK compuesta lo rechaza y aquí se traduce a error legible.
+   *
+   * `memberId` es OPCIONAL porque en el mostrador se escoge la UNIDAD, no la
+   * persona: ausente, se deriva del padrón de la unidad (ver
+   * `resolveUnitMember`). Sigue siendo obligatorio en la FILA — una evidencia
+   * declara quién paga — así que una unidad sin padrón se rechaza con un
+   * mensaje que dice qué arreglar, no con un 23503.
    */
   async create(
     req: FastifyRequest,
-    input: DeclaredEvidenceInput & { readonly unitId: string; readonly memberId: string },
+    input: DeclaredEvidenceInput & {
+      readonly unitId: string;
+      readonly memberId: string | null;
+    },
   ): Promise<MutationResult<Evidence> | null> {
     const claims = requireAuth(req);
 
@@ -138,6 +147,22 @@ export const paymentEvidenceController = {
         if (claimError !== null) {
           return { ok: false as const, error: { kind: "invalid" as const, message: claimError } };
         }
+        // Quién paga: el que nombró el operador o, si no nombró a nadie, el
+        // padrón de la unidad. Que la unidad no tenga a nadie asignado es un
+        // dato faltante del padrón, no un fallo del comprobante — y así se
+        // dice, porque es lo único que el operador puede ir a corregir.
+        const memberId =
+          input.memberId ?? (await paymentEvidenceRepository.resolveUnitMember(tx, input.unitId));
+        if (memberId === null) {
+          return {
+            ok: false as const,
+            error: {
+              kind: "invalid" as const,
+              message:
+                "Esa unidad no tiene a nadie del padrón asignado: registra al residente antes de capturar su comprobante.",
+            },
+          };
+        }
         if (input.claimedCharges.length > 0) {
           const owned = await paymentEvidenceRepository.countUnitCharges(
             tx,
@@ -158,7 +183,7 @@ export const paymentEvidenceController = {
           customerId: claims.customerId,
           communityId: scope.communityId,
           unitId: input.unitId,
-          memberId: input.memberId,
+          memberId,
           source: "operator",
           declaredAmount: input.declaredAmount,
           declaredPaidAt: input.declaredPaidAt ?? null,

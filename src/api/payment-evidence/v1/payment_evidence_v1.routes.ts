@@ -123,7 +123,7 @@ export async function paymentEvidenceV1Routes(instance: FastifyInstance): Promis
       const b = req.body;
       const result = await paymentEvidenceController.create(req, {
         unitId: b.unitId,
-        memberId: b.memberId,
+        memberId: b.memberId ?? null,
         declaredAmount: b.declaredAmount,
         declaredPaidAt: b.declaredPaidAt ?? null,
         declaredMethod: b.declaredMethod,
