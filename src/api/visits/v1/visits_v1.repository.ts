@@ -341,6 +341,16 @@ export interface VisitWithVerdict {
      * pantalla tiene una sola acción y ningún teléfono que exponer.
      */
     readonly contacts: VisitContact[];
+    /**
+     * Solo lo devuelve `checkIn` cuando la entrada QUEDÓ registrada: el evento
+     * creado y a quién avisar (los usuarios vinculados de la unidad). El
+     * controller lo consume para encolar el push tras el commit; las rutas no
+     * lo serializan (el esquema de respuesta no lo conoce).
+     */
+    readonly checkIn?: {
+        readonly eventId: string;
+        readonly notifyUserIds: readonly string[];
+    };
 }
 
 interface ContactRow {
@@ -403,6 +413,30 @@ async function unitContacts(
         issuer: row.issuer,
         phones: row.phones ?? [],
     }));
+}
+
+/**
+ * A quién avisar cuando alguien llega a la unidad: los usuarios de plataforma
+ * VINCULADOS a personas activas del padrón de la unidad (`members.user_id`,
+ * que se llena al invitar). Distinct porque una persona puede figurar en la
+ * unidad con dos relaciones; el emisor del pase entra si sigue en la unidad
+ * y tiene cuenta — y si no, el aviso va a los demás, que es lo útil.
+ *
+ * Es el `user_id` GLOBAL (auth.users.id): push-service abre el aviso a los
+ * dispositivos que ese usuario registró en (cliente, residguard-app).
+ */
+async function unitLinkedUserIds(tx: TxClient, unitId: string): Promise<string[]> {
+    const result = await tx.query<{ user_id: string }>(
+        `SELECT DISTINCT m.user_id
+           FROM community.unit_members um
+           JOIN community.members m ON m.id = um.member_id
+          WHERE um.unit_id = $1
+            AND um.status = 'active'
+            AND m.status = 'active'
+            AND m.user_id IS NOT NULL`,
+        [unitId],
+    );
+    return result.rows.map((row) => row.user_id);
 }
 
 /**
@@ -657,7 +691,15 @@ export const visitsRepository = {
         // Relectura tras el INSERT: el conteo de entradas y el estado derivado
         // acaban de cambiar, y el cliente pinta el resultado del check-in.
         const after = await evaluateVisit(tx, communityId, "v.id = $2", visitId);
-        return after;
+        if (after === null) {
+            return null;
+        }
+
+        // Destinatarios del aviso "llegó tu visita", resueltos DENTRO de la
+        // misma transacción (el padrón que había al registrar la entrada). El
+        // envío no ocurre aquí: el controller lo encola después del commit.
+        const notifyUserIds = await unitLinkedUserIds(tx, after.visit.unitId);
+        return { ...after, checkIn: { eventId: event.id, notifyUserIds } };
     },
 
     /**

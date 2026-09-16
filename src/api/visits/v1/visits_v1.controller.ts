@@ -4,6 +4,7 @@ import { contextFor } from "../../../core/auth/community_access";
 import { withTransaction } from "../../../core/db/with_transaction";
 import type { BusinessError } from "../../../core/http/pg_errors";
 import { storageClient, type StorageFileMetadata } from "../../../core/storage/storage_client";
+import { visitsNotifier } from "./visits_v1.notifier";
 import {
     visitsRepository,
     type ListVisitsInput,
@@ -323,6 +324,16 @@ export const visitsController = {
         );
         if (result === null) {
             return null;
+        }
+        if (result.checkIn !== undefined) {
+            // `checkIn` solo viene cuando la entrada QUEDÓ registrada — y ya
+            // está COMMITEADA: avisar a los residentes de la unidad. El
+            // veredicto NO se mira: es el RELEÍDO tras el INSERT, y en un pase
+            // estricto (entrada recién abierta) o al agotar el tope dice
+            // `already_inside` / `exhausted` aunque la persona acabe de pasar.
+            // Sin await a propósito — la caseta responde ya; el push es un
+            // extra que se registra en el log si falla, nunca un 500.
+            visitsNotifier.arrival(req.log, result.visit, result.checkIn);
         }
         return { ok: true, value: result };
     },

@@ -252,6 +252,11 @@ export const SCREEN_PERMISSIONS = {
     myStatement: "screens.my_statement",
     myPayments: "screens.my_payments",
     myVisits: "screens.my_visits",
+    // Pantalla "Notificaciones" del portal (push-service). Sembrada por
+    // admin_project/db/99_patch_push_permissions.sql; el código funcional que
+    // la acompaña (`push.subscriptions.manage`) lo exige push-service, no este
+    // servicio, y por eso no está en PERMISSIONS.
+    myNotifications: "screens.my_notifications",
     visits: "screens.visits",
     gate: "screens.gate",
     paymentEvidence: "screens.payment_evidence",

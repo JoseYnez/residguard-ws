@@ -82,6 +82,15 @@ const envV = new V.ObjectNotNull({
         max: 3600,
         maxDecimalPlaces: 0,
     }),
+    // Base de push-service (notificacion_project, sin barra final) y la API key
+    // emitida por él para el par (cliente, residguard-app). Canal server-to-
+    // server: este servicio ENCOLA avisos (llegada de visita a caseta); la SPA
+    // registra sus dispositivos directo contra push-service con el Bearer.
+    // VACÍAS = push apagado: el check-in no avisa a nadie y no falla — avisar
+    // es un extra del negocio, nunca su condición. ⚠ Key POR TENANT, mismo
+    // aviso que STORAGE_API_KEY.
+    PUSH_WS_BASE_URL: new V.StringNotNull({ defaultValue: "", maxLength: 2048 }),
+    PUSH_API_KEY: new V.StringNotNull({ defaultValue: "", maxLength: 256 }),
     VISIT_MAX_VALIDITY_DAYS: new V.NumberNotNull({
         defaultValue: 180,
         min: 1,
@@ -140,6 +149,14 @@ if (isProd && !env.STORAGE_WS_BASE_URL.startsWith("https://")) {
     process.exit(1);
 }
 
+// A push-service viaja su API key: mismo razonamiento que storage. Solo se
+// exige cuando el canal está configurado (vacío = apagado, válido).
+if (isProd && env.PUSH_WS_BASE_URL.length > 0 && !env.PUSH_WS_BASE_URL.startsWith("https://")) {
+    // eslint-disable-next-line no-console
+    console.error("En producción PUSH_WS_BASE_URL debe usar https://");
+    process.exit(1);
+}
+
 export const config = {
     databaseUrl: env.DATABASE_URL,
     authWsBaseUrl: env.AUTH_WS_BASE_URL,
@@ -148,6 +165,8 @@ export const config = {
     storageWsBaseUrl: env.STORAGE_WS_BASE_URL.replace(/\/+$/u, ""),
     storageApiKey: env.STORAGE_API_KEY,
     storageLinkTtlSec: env.STORAGE_LINK_TTL_SEC,
+    pushWsBaseUrl: env.PUSH_WS_BASE_URL.replace(/\/+$/u, ""),
+    pushApiKey: env.PUSH_API_KEY,
     residguardAppCode: env.RESIDGUARD_APP_CODE,
     permissionsStaleGraceMs: env.PERMISSIONS_STALE_GRACE_MINUTES * 60_000,
     corsOrigins: env.CORS_ORIGINS.split(",")
