@@ -128,7 +128,8 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
     // El servidor RE-VALIDA con el pase bloqueado y nunca confía en el veredicto
     // que el guardia vio en pantalla: entre la consulta y el toque al botón el
     // residente pudo cancelar. Si ya no procede → 409 con la razón (el actor ve
-    // el pase, pero no puede consumirlo ahora).
+    // el pase, pero no puede consumirlo ahora). Si procede → 201, y el veredicto
+    // que viaja es el de DESPUÉS de la entrada (ver el final del handler).
     //
     // 400 = la regla de evidencia: la entrada exige al menos una foto o el
     // motivo de registrarla sin ella (nunca ninguno, nunca ambos), y las fotos
@@ -181,7 +182,14 @@ export async function visitsV1Routes(instance: FastifyInstance): Promise<void> {
                 timezone: config.dbTimezone,
                 contacts: verdict.contacts,
             };
-            return reply.code(verdict.verdict === "ok" ? 201 : 409).send(payload);
+            // 201 = la entrada QUEDÓ registrada; 409 = el pase no la admitió.
+            // Lo decide `checkIn` (el repositorio solo lo adjunta tras el
+            // INSERT), nunca el veredicto: igual que en la salida, `valid` y
+            // `reason` son el veredicto del pase RELEÍDO tras el movimiento —
+            // en un pase estricto la entrada recién abierta lo vuelve
+            // `already_inside`, y al agotar el tope, `exhausted` — y describen
+            // el estado en que queda, no si entró.
+            return reply.code(verdict.checkIn !== undefined ? 201 : 409).send(payload);
         },
     );
 
