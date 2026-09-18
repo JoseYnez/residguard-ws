@@ -257,6 +257,11 @@ export const SCREEN_PERMISSIONS = {
     // la acompaña (`push.subscriptions.manage`) lo exige push-service, no este
     // servicio, y por eso no está en PERMISSIONS.
     myNotifications: "screens.my_notifications",
+    // Pantalla "Sesiones activas" del portal. Sembrada por
+    // admin_project/db/99_patch_my_sessions_screen.sql; sin código funcional:
+    // los endpoints (auth_ws GET/DELETE /auth/sessions…) autorizan por la
+    // propia sesión del Bearer — este servicio no participa.
+    mySessions: "screens.my_sessions",
     visits: "screens.visits",
     gate: "screens.gate",
     paymentEvidence: "screens.payment_evidence",
