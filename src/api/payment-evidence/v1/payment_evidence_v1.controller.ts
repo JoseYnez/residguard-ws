@@ -277,10 +277,10 @@ export const paymentEvidenceController = {
           cashAccountId: input.cashAccountId ?? null,
           allocations: input.allocations,
         });
-        // Una evidencia es de UNA unidad, así que el aviso es uno: a los
-        // residentes de esa unidad (incluido quien la envió, que es a quien
-        // más le importa), sin el operador que la verificó.
-        const notifyUserIds = await unitLinkedUserIds(tx, evidence.unitId, claims.sub);
+        // Una evidencia es de UNA unidad, así que el aviso es uno: a todos
+        // los residentes de esa unidad — incluido quien la envió, que es a
+        // quien más le importa, y el operador si además vive ahí.
+        const notifyUserIds = await unitLinkedUserIds(tx, evidence.unitId);
         return { ok: true as const, value: evidence, notifyUserIds };
       }).then((outcome) => {
         if (outcome !== null && outcome.ok && outcome.value.payment !== null) {

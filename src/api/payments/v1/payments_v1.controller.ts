@@ -19,13 +19,15 @@ import {
 /**
  * Las unidades que un pago alcanzó, con lo aplicado a cada una y a quién
  * avisar, resueltas DENTRO de la transacción (el padrón que había al
- * registrar). Un depósito multi-unidad se vuelve un aviso por unidad; el
- * actor no se avisa a sí mismo.
+ * registrar). Un depósito multi-unidad se vuelve un aviso por unidad.
+ *
+ * El actor SÍ se avisa a sí mismo si vive en la unidad: un residente que es
+ * además administrador registra el pago de su propia casa y espera verlo
+ * llegar como cualquier vecino — el aviso es la constancia, no una novedad.
  */
 export async function paymentUnitNotices(
   tx: Parameters<typeof unitLinkedUserIds>[0],
   payment: PaymentDetail,
-  actorUserId: string,
 ): Promise<PaymentUnitNotice[]> {
   const byUnit = new Map<string, { unitCode: string; cents: number }>();
   for (const allocation of payment.allocations) {
@@ -39,7 +41,7 @@ export async function paymentUnitNotices(
       unitId,
       unitCode,
       amount: cents / 100,
-      notifyUserIds: await unitLinkedUserIds(tx, unitId, actorUserId),
+      notifyUserIds: await unitLinkedUserIds(tx, unitId),
     });
   }
   return notices;
@@ -100,7 +102,7 @@ export const paymentsController = {
           return null;
         }
         const payment = await paymentsRepository.register(tx, claims.sub, input);
-        return { payment, units: await paymentUnitNotices(tx, payment, claims.sub) };
+        return { payment, units: await paymentUnitNotices(tx, payment) };
       });
       if (registered === null) {
         return {
