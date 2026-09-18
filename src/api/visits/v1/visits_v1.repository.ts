@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { TxClient } from "../../../core/db/with_transaction";
+import { unitLinkedUserIds } from "../../../core/push/unit_recipients";
 import type { StorageFileMetadata } from "../../../core/storage/storage_client";
 
 // Acceso a datos del dominio `access`: el pase pre-registrado (access.visits) y
@@ -353,6 +354,21 @@ export interface VisitWithVerdict {
     };
 }
 
+/**
+ * Resultado de la salida. `recorded: false` = no había entrada abierta (409).
+ * `checkOut` viaja SOLO cuando quedó registrada: el evento creado y a quién
+ * avisar, mismo contrato que `checkIn` — el controller encola el push tras el
+ * commit y las rutas no lo serializan.
+ */
+export interface CheckOutResult {
+    readonly recorded: boolean;
+    readonly value: VisitWithVerdict;
+    readonly checkOut?: {
+        readonly eventId: string;
+        readonly notifyUserIds: readonly string[];
+    };
+}
+
 interface ContactRow {
     member_id: string;
     name: string;
@@ -413,30 +429,6 @@ async function unitContacts(
         issuer: row.issuer,
         phones: row.phones ?? [],
     }));
-}
-
-/**
- * A quién avisar cuando alguien llega a la unidad: los usuarios de plataforma
- * VINCULADOS a personas activas del padrón de la unidad (`members.user_id`,
- * que se llena al invitar). Distinct porque una persona puede figurar en la
- * unidad con dos relaciones; el emisor del pase entra si sigue en la unidad
- * y tiene cuenta — y si no, el aviso va a los demás, que es lo útil.
- *
- * Es el `user_id` GLOBAL (auth.users.id): push-service abre el aviso a los
- * dispositivos que ese usuario registró en (cliente, residguard-app).
- */
-async function unitLinkedUserIds(tx: TxClient, unitId: string): Promise<string[]> {
-    const result = await tx.query<{ user_id: string }>(
-        `SELECT DISTINCT m.user_id
-           FROM community.unit_members um
-           JOIN community.members m ON m.id = um.member_id
-          WHERE um.unit_id = $1
-            AND um.status = 'active'
-            AND m.status = 'active'
-            AND m.user_id IS NOT NULL`,
-        [unitId],
-    );
-    return result.rows.map((row) => row.user_id);
 }
 
 /**
@@ -726,7 +718,7 @@ export const visitsRepository = {
             readonly gate: string | null;
             readonly notes: string | null;
         },
-    ): Promise<{ recorded: boolean; value: VisitWithVerdict } | null> {
+    ): Promise<CheckOutResult | null> {
         const locked = await tx.query<{ id: string }>(
             `SELECT v.id
                FROM access.visits v
@@ -762,7 +754,7 @@ export const visitsRepository = {
         // evento de entrada en vez de re-preguntarse. La IDENTIFICACIÓN no se
         // copia — se cotejó al entrar y nadie la vuelve a mirar al salir; el
         // acceso sí se hereda si la caseta no declara el suyo.
-        await tx.query(
+        const inserted = await tx.query<{ id: string }>(
             `INSERT INTO access.visit_events (
                  customer_id, community_id, visit_id, unit_id,
                  event_type, source, gate,
@@ -772,15 +764,21 @@ export const visitsRepository = {
                     'check_out', 'gate', COALESCE($2, e.gate),
                     e.visitor_name, e.companions, e.vehicle_plate, $3
                FROM access.visit_events e
-              WHERE e.id = $1`,
+              WHERE e.id = $1
+             RETURNING id`,
             [lastEvent.id, input.gate, input.notes],
         );
+        const event = inserted.rows[0]!;
 
         const after = await evaluateVisit(tx, communityId, "v.id = $2", visitId);
         if (after === null) {
             return null;
         }
-        return { recorded: true, value: after };
+
+        // Destinatarios del aviso "tu visita salió", resueltos DENTRO de la
+        // misma transacción, igual que en el check-in.
+        const notifyUserIds = await unitLinkedUserIds(tx, after.visit.unitId);
+        return { recorded: true, value: after, checkOut: { eventId: event.id, notifyUserIds } };
     },
 
     /** Eventos de un pase, del más reciente al más antiguo. */

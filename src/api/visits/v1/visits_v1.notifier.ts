@@ -1,26 +1,29 @@
 import type { FastifyBaseLogger } from "fastify";
-import { pushClient } from "../../../core/push/push_client";
+import { pushClient, type PushEnqueueInput } from "../../../core/push/push_client";
 import type { Visit } from "./visits_v1.repository";
 
 // Avisos push del dominio `access`: lo que pasa en la caseta se lo cuenta el
-// servicio a los residentes de la unidad. Dos hechos viajan hoy:
+// servicio a los residentes de la unidad. Tres hechos viajan hoy:
 //
 //   * "tu visita llegó" — cada entrada registrada.
 //   * "tu pase se agotó" — la entrada que consume la última de `max_entries`.
+//   * "tu visita salió" — cada salida registrada.
 //
-// Los dos ocurren en el MISMO instante (un pase solo se gasta al registrar una
-// entrada), así que van en UN solo aviso cuyo texto cambia, y no en dos pushes
-// seguidos: dos vibraciones por un solo hecho físico es ruido, y con `tag` por
-// pase el segundo aviso pisaría al primero en pantalla de todos modos. La SPA
-// distingue los casos por `data.kind`.
+// Llegada y agotamiento ocurren en el MISMO instante (un pase solo se gasta
+// al registrar una entrada), así que van en UN solo aviso cuyo texto cambia,
+// y no en dos pushes seguidos: dos vibraciones por un solo hecho físico es
+// ruido, y con `tag` por pase el segundo aviso pisaría al primero en pantalla
+// de todos modos. La salida sí es otro momento y otro aviso; comparte el
+// `tag` para que en pantalla quede el último estado del pase, no una pila.
+// La SPA distingue los casos por `data.kind`.
 //
-// Contrato con quien llama: NUNCA lanza y NUNCA se espera. El check-in ya
+// Contrato con quien llama: NUNCA lanza y NUNCA se espera. El evento ya
 // quedó commiteado cuando esto corre; si push-service no contesta, el aviso se
 // pierde y queda en el log — la caseta no puede depender de un servicio
 // externo para abrir una puerta.
 
 /** Vida del aviso en el push service: una visita de hace una hora ya no es "llegó". */
-const ARRIVAL_TTL_SEC = 3_600;
+const GATE_EVENT_TTL_SEC = 3_600;
 
 /**
  * Un pase agotado sigue siendo noticia horas después —el residente tiene que
@@ -32,12 +35,18 @@ const EXHAUSTED_TTL_SEC = 86_400;
 /** Ruta de la SPA a la que navega la notificación al tocarla. */
 const MY_VISITS_ROUTE = "/my-visits";
 
-/** Lo que cambia entre "llegó" y "llegó y con esta se acabó el pase". */
-export interface ArrivalMessage {
-    readonly kind: "visit_arrived" | "visit_exhausted";
+/** Lo que cambia entre "llegó", "llegó y con esta se acabó el pase" y "salió". */
+export interface GateMessage {
+    readonly kind: "visit_arrived" | "visit_exhausted" | "visit_left";
     readonly title: string;
     readonly body: string;
     readonly ttlSec: number;
+}
+
+/** El evento de caseta ya commiteado: su id y a quién avisar. */
+export interface GateEventNotice {
+    readonly eventId: string;
+    readonly notifyUserIds: readonly string[];
 }
 
 /**
@@ -50,17 +59,20 @@ export function isExhaustedByThisEntry(visit: Visit): boolean {
     return visit.maxEntries !== null && visit.entryCount >= visit.maxEntries;
 }
 
-/** Texto del aviso. Puro y exportado para poder probarlo sin red ni Fastify. */
-export function arrivalMessage(visit: Visit): ArrivalMessage {
-    const unit = visit.unitTower ? `${visit.unitTower} ${visit.unitCode}` : visit.unitCode;
-    const arrived = `${visit.visitorName} llegó a la unidad ${unit}`;
+function unitLabel(visit: Visit): string {
+    return visit.unitTower ? `${visit.unitTower} ${visit.unitCode}` : visit.unitCode;
+}
+
+/** Texto del aviso de entrada. Puro y exportado para poder probarlo sin red ni Fastify. */
+export function arrivalMessage(visit: Visit): GateMessage {
+    const arrived = `${visit.visitorName} llegó a la unidad ${unitLabel(visit)}`;
 
     if (!isExhaustedByThisEntry(visit)) {
         return {
             kind: "visit_arrived",
             title: "Visita en caseta",
             body: arrived,
-            ttlSec: ARRIVAL_TTL_SEC,
+            ttlSec: GATE_EVENT_TTL_SEC,
         };
     }
 
@@ -78,70 +90,88 @@ export function arrivalMessage(visit: Visit): ArrivalMessage {
     };
 }
 
-export const visitsNotifier = {
-    /**
-     * Encola el aviso de la entrada a los usuarios vinculados de la unidad.
-     * Vacío de destinatarios o canal apagado → no hace nada (ni log: es lo
-     * normal en una unidad sin residentes con cuenta).
-     *
-     * idempotencyKey por EVENTO de entrada: un reintento del mismo check-in no
-     * avisa dos veces, y una segunda entrada del mismo pase (recurrentes) sí.
-     * `tag` por PASE: dos avisos del mismo pase se colapsan en pantalla — el
-     * más reciente es el que importa, y si fue el que agotó el pase, mejor.
-     */
-    arrival(
-        log: FastifyBaseLogger,
-        visit: Visit,
-        checkIn: { readonly eventId: string; readonly notifyUserIds: readonly string[] },
-    ): void {
-        if (!pushClient.enabled || checkIn.notifyUserIds.length === 0) {
-            return;
-        }
+/** Texto del aviso de salida. */
+export function departureMessage(visit: Visit): GateMessage {
+    return {
+        kind: "visit_left",
+        title: "Visita salió",
+        body: `${visit.visitorName} salió de la unidad ${unitLabel(visit)}`,
+        ttlSec: GATE_EVENT_TTL_SEC,
+    };
+}
 
-        const message = arrivalMessage(visit);
+/**
+ * Encola un aviso de caseta. Vacío de destinatarios o canal apagado → no hace
+ * nada (ni log: es lo normal en una unidad sin residentes con cuenta).
+ *
+ * idempotencyKey por EVENTO: un reintento del mismo registro no avisa dos
+ * veces, y una segunda entrada del mismo pase (recurrentes) sí. `tag` por
+ * PASE: los avisos del mismo pase se colapsan en pantalla — el más reciente es
+ * el que importa.
+ */
+function enqueueGateEvent(
+    log: FastifyBaseLogger,
+    visit: Visit,
+    event: GateEventNotice,
+    message: GateMessage,
+    extra: Record<string, unknown> = {},
+): void {
+    if (!pushClient.enabled || event.notifyUserIds.length === 0) {
+        return;
+    }
 
-        void pushClient
-            .enqueue({
-                recipients: checkIn.notifyUserIds,
-                title: message.title,
-                body: message.body,
-                clickUrl: MY_VISITS_ROUTE,
-                tag: `visit-${visit.id}`,
-                urgency: "high",
-                ttlSec: message.ttlSec,
-                idempotencyKey: `visit-${visit.id}-entry-${checkIn.eventId}`,
-                data: {
-                    kind: message.kind,
-                    visitId: visit.id,
-                    eventId: checkIn.eventId,
-                    entryCount: visit.entryCount,
-                    maxEntries: visit.maxEntries,
-                },
-                metadata: { communityId: visit.communityId, unitId: visit.unitId },
-            })
-            .then((result) => {
-                if (!result.ok) {
-                    log.warn(
-                        { visitId: visit.id, kind: message.kind, status: result.status, error: result.error },
-                        `push: no se pudo encolar el aviso de caseta: ${result.message}`,
-                    );
-                    return;
-                }
-                log.info(
-                    {
-                        visitId: visit.id,
-                        kind: message.kind,
-                        pushMessageId: result.value.id,
-                        deliveries: result.value.deliveriesTotal,
-                        withoutDevices: result.value.recipientsWithoutDevices.length,
-                    },
-                    "push: aviso de caseta encolado",
+    const input: PushEnqueueInput = {
+        recipients: event.notifyUserIds,
+        title: message.title,
+        body: message.body,
+        clickUrl: MY_VISITS_ROUTE,
+        tag: `visit-${visit.id}`,
+        urgency: "high",
+        ttlSec: message.ttlSec,
+        idempotencyKey: `visit-${visit.id}-event-${event.eventId}`,
+        data: { kind: message.kind, visitId: visit.id, eventId: event.eventId, ...extra },
+        metadata: { communityId: visit.communityId, unitId: visit.unitId },
+    };
+
+    void pushClient
+        .enqueue(input)
+        .then((result) => {
+            if (!result.ok) {
+                log.warn(
+                    { visitId: visit.id, kind: message.kind, status: result.status, error: result.error },
+                    `push: no se pudo encolar el aviso de caseta: ${result.message}`,
                 );
-            })
-            .catch((err: unknown) => {
-                // pushClient no lanza, pero el contrato de este módulo es no
-                // dejar NUNCA una promesa rechazada suelta.
-                log.error({ err, visitId: visit.id }, "push: fallo inesperado al encolar");
-            });
+                return;
+            }
+            log.info(
+                {
+                    visitId: visit.id,
+                    kind: message.kind,
+                    pushMessageId: result.value.id,
+                    deliveries: result.value.deliveriesTotal,
+                    withoutDevices: result.value.recipientsWithoutDevices.length,
+                },
+                "push: aviso de caseta encolado",
+            );
+        })
+        .catch((err: unknown) => {
+            // pushClient no lanza, pero el contrato de este módulo es no
+            // dejar NUNCA una promesa rechazada suelta.
+            log.error({ err, visitId: visit.id }, "push: fallo inesperado al encolar");
+        });
+}
+
+export const visitsNotifier = {
+    /** "Llegó tu visita" (o "llegó y con esta se agotó el pase"). */
+    arrival(log: FastifyBaseLogger, visit: Visit, checkIn: GateEventNotice): void {
+        enqueueGateEvent(log, visit, checkIn, arrivalMessage(visit), {
+            entryCount: visit.entryCount,
+            maxEntries: visit.maxEntries,
+        });
+    },
+
+    /** "Salió tu visita". */
+    departure(log: FastifyBaseLogger, visit: Visit, checkOut: GateEventNotice): void {
+        enqueueGateEvent(log, visit, checkOut, departureMessage(visit));
     },
 };

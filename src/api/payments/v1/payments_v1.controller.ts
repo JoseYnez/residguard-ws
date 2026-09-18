@@ -6,6 +6,8 @@ import {
 } from "../../../core/auth/community_access";
 import { withTransaction } from "../../../core/db/with_transaction";
 import { translatePgError, type MutationResult } from "../../../core/http/pg_errors";
+import { unitLinkedUserIds } from "../../../core/push/unit_recipients";
+import { paymentsNotifier, type PaymentUnitNotice } from "./payments_v1.notifier";
 import {
   paymentsRepository,
   type ListPaymentsInput,
@@ -13,6 +15,35 @@ import {
   type PaymentListItem,
   type RegisterPaymentInput,
 } from "./payments_v1.repository";
+
+/**
+ * Las unidades que un pago alcanzó, con lo aplicado a cada una y a quién
+ * avisar, resueltas DENTRO de la transacción (el padrón que había al
+ * registrar). Un depósito multi-unidad se vuelve un aviso por unidad; el
+ * actor no se avisa a sí mismo.
+ */
+export async function paymentUnitNotices(
+  tx: Parameters<typeof unitLinkedUserIds>[0],
+  payment: PaymentDetail,
+  actorUserId: string,
+): Promise<PaymentUnitNotice[]> {
+  const byUnit = new Map<string, { unitCode: string; cents: number }>();
+  for (const allocation of payment.allocations) {
+    const current = byUnit.get(allocation.unitId) ?? { unitCode: allocation.unitCode, cents: 0 };
+    current.cents += Math.round(allocation.amount * 100);
+    byUnit.set(allocation.unitId, current);
+  }
+  const notices: PaymentUnitNotice[] = [];
+  for (const [unitId, { unitCode, cents }] of byUnit) {
+    notices.push({
+      unitId,
+      unitCode,
+      amount: cents / 100,
+      notifyUserIds: await unitLinkedUserIds(tx, unitId, actorUserId),
+    });
+  }
+  return notices;
+}
 
 // Orquestación del recurso payments. El pago pertenece a UNA comunidad
 // (billing.payments.community_id, derivada de sus cargos por la vía
@@ -57,7 +88,7 @@ export const paymentsController = {
     }
 
     try {
-      const payment = await withTransaction(contextFor(req), async (tx) => {
+      const registered = await withTransaction(contextFor(req), async (tx) => {
         // Frontera de alcance: todos los cargos deben ser de comunidades
         // donde el actor tiene membresía activa.
         const accessible = await paymentsRepository.countAccessibleCharges(
@@ -68,9 +99,10 @@ export const paymentsController = {
         if (accessible !== distinct.size) {
           return null;
         }
-        return paymentsRepository.register(tx, claims.sub, input);
+        const payment = await paymentsRepository.register(tx, claims.sub, input);
+        return { payment, units: await paymentUnitNotices(tx, payment, claims.sub) };
       });
-      if (payment === null) {
+      if (registered === null) {
         return {
           ok: false,
           error: {
@@ -79,7 +111,14 @@ export const paymentsController = {
           },
         };
       }
-      return { ok: true, value: payment };
+      // Pago COMMITEADO: avisar a los residentes de cada unidad alcanzada.
+      // Sin await — el push es un extra que se registra en el log si falla.
+      paymentsNotifier.registered(req.log, {
+        paymentId: registered.payment.id,
+        communityId: registered.payment.communityId,
+        units: registered.units,
+      });
+      return { ok: true, value: registered.payment };
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
     }

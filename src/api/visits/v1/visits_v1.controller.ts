@@ -7,6 +7,7 @@ import { storageClient, type StorageFileMetadata } from "../../../core/storage/s
 import { visitsNotifier } from "./visits_v1.notifier";
 import {
     visitsRepository,
+    type CheckOutResult,
     type ListVisitsInput,
     type Visit,
     type VisitEvent,
@@ -354,10 +355,17 @@ export const visitsController = {
             readonly gate: string | null;
             readonly notes: string | null;
         },
-    ): Promise<{ recorded: boolean; value: VisitWithVerdict } | null> {
-        return withTransaction(contextFor(req), (tx) =>
+    ): Promise<CheckOutResult | null> {
+        const result = await withTransaction(contextFor(req), (tx) =>
             visitsRepository.checkOut(tx, communityId, visitId, input),
         );
+        if (result?.checkOut !== undefined) {
+            // Salida COMMITEADA: avisar "tu visita salió" a los residentes de
+            // la unidad. Mismo contrato que la llegada — sin await, el push es
+            // un extra que se registra en el log si falla, nunca un 500.
+            visitsNotifier.departure(req.log, result.value.visit, result.checkOut);
+        }
+        return result;
     },
 
     /**

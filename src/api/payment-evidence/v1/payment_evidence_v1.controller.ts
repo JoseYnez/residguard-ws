@@ -7,7 +7,9 @@ import {
 } from "../../../core/auth/community_access";
 import { withTransaction } from "../../../core/db/with_transaction";
 import { translatePgError, type MutationResult } from "../../../core/http/pg_errors";
+import { unitLinkedUserIds } from "../../../core/push/unit_recipients";
 import { storageClient, type StorageFileMetadata } from "../../../core/storage/storage_client";
+import { paymentsNotifier } from "../../payments/v1/payments_v1.notifier";
 import {
   paymentEvidenceRepository,
   type Evidence,
@@ -275,7 +277,29 @@ export const paymentEvidenceController = {
           cashAccountId: input.cashAccountId ?? null,
           allocations: input.allocations,
         });
-        return { ok: true as const, value: evidence };
+        // Una evidencia es de UNA unidad, así que el aviso es uno: a los
+        // residentes de esa unidad (incluido quien la envió, que es a quien
+        // más le importa), sin el operador que la verificó.
+        const notifyUserIds = await unitLinkedUserIds(tx, evidence.unitId, claims.sub);
+        return { ok: true as const, value: evidence, notifyUserIds };
+      }).then((outcome) => {
+        if (outcome !== null && outcome.ok && outcome.value.payment !== null) {
+          // Pago COMMITEADO (la transacción ya cerró): mismo aviso que el
+          // registro en ventanilla — es un registro de pago.
+          paymentsNotifier.registered(req.log, {
+            paymentId: outcome.value.payment.id,
+            communityId: outcome.value.communityId,
+            units: [
+              {
+                unitId: outcome.value.unitId,
+                unitCode: outcome.value.unitCode,
+                amount: outcome.value.payment.amount,
+                notifyUserIds: outcome.notifyUserIds,
+              },
+            ],
+          });
+        }
+        return outcome;
       });
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
