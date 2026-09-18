@@ -327,12 +327,14 @@ export const visitsController = {
         }
         if (result.checkIn !== undefined) {
             // `checkIn` solo viene cuando la entrada QUEDÓ registrada — y ya
-            // está COMMITEADA: avisar a los residentes de la unidad. El
-            // veredicto NO se mira: es el RELEÍDO tras el INSERT, y en un pase
-            // estricto (entrada recién abierta) o al agotar el tope dice
-            // `already_inside` / `exhausted` aunque la persona acabe de pasar.
-            // Sin await a propósito — la caseta responde ya; el push es un
-            // extra que se registra en el log si falla, nunca un 500.
+            // está COMMITEADA: avisar a los residentes de la unidad ("llegó",
+            // o "llegó y con esta se agotó el pase": el notifier lo decide por
+            // el conteo releído). El veredicto NO se mira: es el RELEÍDO tras
+            // el INSERT, y en un pase estricto (entrada recién abierta) o al
+            // agotar el tope dice `already_inside` / `exhausted` aunque la
+            // persona acabe de pasar. Sin await a propósito — la caseta
+            // responde ya; el push es un extra que se registra en el log si
+            // falla, nunca un 500.
             visitsNotifier.arrival(req.log, result.visit, result.checkIn);
         }
         return { ok: true, value: result };
