@@ -47,7 +47,7 @@ residguard_ws/
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
 │   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
 │   │   ├── visits/v1/               ← registro previo de visitas, lado OPERACIÓN: bitácora de la comunidad, consulta de un código en caseta y check-in
-│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/visits, /me/payment-evidence): alcance por vínculo del padrón, no por community_members
+│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/payments[/:id], /me/visits, /me/payment-evidence): alcance por vínculo del padrón, no por community_members
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -60,6 +60,8 @@ residguard_ws/
 │   │   │   └── community_access.ts  ← alcance por comunidad (preHandlers + helpers)
 │   │   ├── platform/
 │   │   │   └── tenant_admin_client.ts ← cliente de la superficie tenant de admin_ws (invitaciones)
+│   │   ├── text/
+│   │   │   └── home_label.ts        ← cómo se le NOMBRA su domicilio al residente ("casa 426-A"): solo avisos push; lo administrativo sigue diciendo "unidad"
 │   │   ├── storage/
 │   │   │   └── storage_client.ts    ← cliente server-to-server (X-Api-Key) de storage-service: valida archivos de evidencias y emite enlaces firmados
 │   │   └── http/                    ← error handler + traducción de errores PG

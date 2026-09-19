@@ -4,7 +4,9 @@
 > `residguard_app/docs/portal-residente-claridad.md`. Si algo aquí choca con
 > `CLAUDE.md`, mandan las reglas de `CLAUDE.md`.
 >
-> Estado: **PLAN, sin implementar** (2026-09-18).
+> Estado: **IMPLEMENTADO en el working tree, sin commit ni despliegue**
+> (2026-09-18). `tsc` limpio, `pnpm test` 23/23 y smoke SQL contra una BD
+> desechable de `init.sql`. Notas de lo que quedó distinto del plan: §7.
 
 ---
 
@@ -141,3 +143,26 @@ Correos con **botón** en vez de URL a la vista, en `admin_project` (no es repo
 git): invitación y aviso de acceso (`admin_ws/src/core/mailer/mailer.ts`) y
 recuperación de clave (`auth_ws/src/core/mailer/mailer.ts`). El `text` plano
 conserva la URL como alternativa. Falta redesplegar admin_ws y auth_ws.
+
+## 7. Notas de implementación (2026-09-18)
+
+- **Pruebas**: el repo no tenía runner. Se agregó `pnpm test`
+  (`tsx --test`, `node:test`) y `src/test_env.ts`, que rellena las variables
+  de entorno ausentes: `config.ts` valida el entorno al importarse y los
+  notifiers lo cargan de forma transitiva aunque sus textos sean puros.
+- **Un solo punto donde nace un `PaymentDetail`**: `buildPaymentDetail` en
+  `payments_v1.repository.ts`, con `fetchPaymentAllocations` compartido por el
+  operador (filtra por membresía) y el residente (depósito completo).
+- **Comprobante del residente**: se exige la unidad mía Y que la evidencia sea
+  de una fila MÍA del padrón — la misma condición que `getMine`, porque el
+  enlace de descarga (`/me/payment-evidence/:id/files/:fileId/link`) la usa y
+  respondería 404 sobre un archivo que sí se enseñó (copropietarios).
+- **`hasPermission(req, code)`** (`core/auth/require_permission.ts`): permiso
+  OPCIONAL para campos extra de una respuesta; falla cerrado.
+- **El aviso de la verificación** ahora sale del pago recién creado
+  (`paymentUnitNotices`), igual que el de ventanilla: mismo texto por las dos vías.
+- **Covers del push**: hasta dos cargos se nombran completos (separados por
+  `;`); con más, el primero y "y N más".
+- `unitType`/`unitTower` viajan también en el contrato COMPARTIDO de
+  evidencias y visitas (operador incluido): es el mismo objeto, campos aditivos.
+- Mensajes de error de `/me` que lee el residente: "unidad" → "domicilio".
