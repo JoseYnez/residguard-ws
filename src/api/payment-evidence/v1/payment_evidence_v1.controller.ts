@@ -9,7 +9,10 @@ import { withTransaction } from "../../../core/db/with_transaction";
 import { translatePgError, type MutationResult } from "../../../core/http/pg_errors";
 import { unitLinkedUserIds } from "../../../core/push/unit_recipients";
 import { storageClient, type StorageFileMetadata } from "../../../core/storage/storage_client";
+import { paymentUnitNotices } from "../../payments/v1/payments_v1.controller";
 import { paymentsNotifier } from "../../payments/v1/payments_v1.notifier";
+import { paymentsRepository } from "../../payments/v1/payments_v1.repository";
+import { paymentEvidenceNotifier } from "./payment_evidence_v1.notifier";
 import {
   paymentEvidenceRepository,
   type Evidence,
@@ -277,29 +280,31 @@ export const paymentEvidenceController = {
           cashAccountId: input.cashAccountId ?? null,
           allocations: input.allocations,
         });
-        // Una evidencia es de UNA unidad, así que el aviso es uno: a todos
-        // los residentes de esa unidad — incluido quien la envió, que es a
-        // quien más le importa, y el operador si además vive ahí.
-        const notifyUserIds = await unitLinkedUserIds(tx, evidence.unitId);
-        return { ok: true as const, value: evidence, notifyUserIds };
+        // El aviso sale del PAGO recién creado, con la misma función que el
+        // registro en ventanilla: así dice qué cubrió y nombra el domicilio
+        // igual por las dos vías. Llega a todos los residentes de la unidad —
+        // incluido quien envió el comprobante, que es a quien más le importa,
+        // y el operador si además vive ahí.
+        const payment =
+          evidence.payment === null
+            ? null
+            : await paymentsRepository.getById(tx, claims.sub, evidence.payment.id);
+        const units = payment === null ? [] : await paymentUnitNotices(tx, payment);
+        return { ok: true as const, value: evidence, units };
       }).then((outcome) => {
-        if (outcome !== null && outcome.ok && outcome.value.payment !== null) {
+        if (outcome === null || !outcome.ok) {
+          return outcome;
+        }
+        if (outcome.value.payment !== null) {
           // Pago COMMITEADO (la transacción ya cerró): mismo aviso que el
           // registro en ventanilla — es un registro de pago.
           paymentsNotifier.registered(req.log, {
             paymentId: outcome.value.payment.id,
             communityId: outcome.value.communityId,
-            units: [
-              {
-                unitId: outcome.value.unitId,
-                unitCode: outcome.value.unitCode,
-                amount: outcome.value.payment.amount,
-                notifyUserIds: outcome.notifyUserIds,
-              },
-            ],
+            units: outcome.units,
           });
         }
-        return outcome;
+        return { ok: true as const, value: outcome.value };
       });
     } catch (err) {
       return { ok: false, error: translatePgError(err, PG_MESSAGES) };
@@ -316,7 +321,7 @@ export const paymentEvidenceController = {
     note: string,
   ): Promise<MutationResult<Evidence> | null> {
     const claims = requireAuth(req);
-    return withTransaction(contextFor(req), async (tx) => {
+    const outcome = await withTransaction(contextFor(req), async (tx) => {
       const visible = await paymentEvidenceRepository.getById(tx, claims.sub, id);
       if (visible === null) {
         return null;
@@ -331,8 +336,23 @@ export const paymentEvidenceController = {
           },
         };
       }
-      return { ok: true as const, value: rejected };
+      // Mismos destinatarios que la verificación: los residentes de la unidad.
+      const notifyUserIds = await unitLinkedUserIds(tx, rejected.unitId);
+      return { ok: true as const, value: rejected, notifyUserIds };
     });
+    if (outcome === null || !outcome.ok) {
+      return outcome;
+    }
+    // Rechazo COMMITEADO: la app promete "te avisaremos", y el residente tiene
+    // que enterarse de que su comprobante no pasó (y por qué) sin abrir la app.
+    paymentEvidenceNotifier.rejected(req.log, {
+      evidenceId: outcome.value.id,
+      communityId: outcome.value.communityId,
+      unitId: outcome.value.unitId,
+      resolutionNote: outcome.value.resolutionNote ?? note,
+      notifyUserIds: outcome.notifyUserIds,
+    });
+    return { ok: true, value: outcome.value };
   },
 
   /**

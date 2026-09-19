@@ -1,5 +1,6 @@
 import { Verifiers as V } from "structure-verifier";
 import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifier";
+import { paymentDetailFields } from "../../payments/v1/payments_v1.verifier";
 import { unitChargeStatementV1V, unitStatementQueryV1V } from "../../reports/v1/reports_v1.verifier";
 
 // Contratos del recurso me/v1: la AUTOCONSULTA del residente. Todo lo que sale
@@ -46,6 +47,9 @@ export const myPaymentCoverV1V = new V.ObjectNotNull({
   /** Nombre del periodo (label o derivado); null = cargo suelto. */
   period: new V.String(),
   unitCode: new V.StringNotNull(),
+  /** Torre y tipo: el portal nombra el domicilio por su tipo ("casa 426-A"). */
+  unitTower: new V.String(),
+  unitType: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
 });
 
@@ -68,6 +72,15 @@ export const myPaymentListV1V = new V.ObjectNotNull({
   total: new V.NumberNotNull(),
   page: new V.NumberNotNull(),
   pageSize: new V.NumberNotNull(),
+});
+
+// --- Un pago mío en detalle -----------------------------------------------------
+// La MISMA forma que el detalle del operador (paymentDetailV1V) —con ella la
+// app dibuja el mismo recibo— más `communityName`: el residente no tiene
+// selector de comunidad del cual sacar el nombre que encabeza el recibo.
+export const myPaymentDetailV1V = new V.ObjectNotNull({
+  ...paymentDetailFields(),
+  communityName: new V.StringNotNull(),
 });
 
 // El estado de cuenta reusa el contrato COMPLETO de la V2 de reports

@@ -75,6 +75,10 @@ export const paymentAllocationV1V = new V.ObjectNotNull({
   chargeId: new V.StringNotNull(),
   unitId: new V.StringNotNull(),
   unitCode: new V.StringNotNull(),
+  /** Torre y tipo de la unidad: el recibo que saca el residente la nombra por
+   *  su tipo ("casa 426-A"). */
+  unitTower: new V.String(),
+  unitType: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
   concept: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
@@ -102,8 +106,30 @@ export const paymentV1V = new V.ObjectNotNull({
   updatedAt: new V.StringNotNull(),
 });
 
+// --- Salida: el comprobante que respalda un pago (null = sin comprobante) --------------
+// Forma MÍNIMA: qué es y qué archivos trae. Los enlaces firmados no viajan
+// aquí; el cliente los pide con los endpoints de descarga de evidencias (los
+// del operador o los de /me), que ya validan alcance.
+export const paymentEvidenceSummaryV1V = new V.Object({
+  id: new V.StringNotNull(),
+  evidenceStatus: new V.StringNotNull(),
+  /** 'resident' | 'operator'. */
+  source: new V.StringNotNull(),
+  files: new V.ArrayNotNull(
+    new V.ObjectNotNull({
+      id: new V.StringNotNull(),
+      filename: new V.StringNotNull(),
+      contentType: new V.StringNotNull(),
+      sizeBytes: new V.NumberNotNull(),
+    }),
+  ),
+});
+
 // --- Salida: un pago con sus aplicaciones ---------------------------------------------
-export const paymentDetailV1V = new V.ObjectNotNull({
+// Los campos van sueltos (y no `...paymentV1V`) para que `GET /me/payments/:id`
+// pueda extender ESTA forma: el recibo del residente y el del operador se
+// dibujan con el mismo objeto.
+export const paymentDetailFields = () => ({
   id: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
   amount: new V.NumberNotNull(),
@@ -112,10 +138,16 @@ export const paymentDetailV1V = new V.ObjectNotNull({
   reference: new V.String(),
   cashAccount: paymentCashAccountV1V,
   status: new V.StringNotNull(),
+  /** Quién capturó el pago ("Recibido por"); null = sin fila en core.users. */
+  createdByName: new V.String(),
   createdAt: new V.StringNotNull(),
   updatedAt: new V.StringNotNull(),
   allocations: new V.ArrayNotNull(paymentAllocationV1V),
+  /** null = sin comprobante, o el actor no trae `payment_evidence.read`. */
+  evidence: paymentEvidenceSummaryV1V,
 });
+
+export const paymentDetailV1V = new V.ObjectNotNull(paymentDetailFields());
 
 // --- Salida: listado paginado (con el monto aplicado a la comunidad filtrada) ---------
 export const paymentListItemV1V = new V.ObjectNotNull({

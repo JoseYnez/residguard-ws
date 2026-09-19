@@ -43,11 +43,32 @@ export interface EvidencePaymentRef {
   readonly paidAt: string;
 }
 
+/** Archivo de un comprobante, en la forma mínima del detalle de un pago. */
+export interface PaymentEvidenceSummaryFile {
+  readonly id: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+/** El comprobante que respalda un pago (ver `getSummaryByPaymentId`). */
+export interface PaymentEvidenceSummary {
+  readonly id: string;
+  readonly evidenceStatus: string;
+  /** 'resident' | 'operator'. */
+  readonly source: string;
+  readonly files: PaymentEvidenceSummaryFile[];
+}
+
 export interface Evidence {
   readonly id: string;
   readonly communityId: string;
   readonly unitId: string;
   readonly unitCode: string;
+  /** Torre y tipo de la unidad: el portal del residente la nombra por su tipo
+   *  ("casa 426-A"); la bandeja del operador sigue leyendo el código. */
+  readonly unitTower: string | null;
+  readonly unitType: string;
   readonly memberId: string;
   readonly memberName: string;
   readonly declaredAmount: number;
@@ -110,6 +131,7 @@ export interface ListEvidenceInput {
 // catálogos. LEFT JOIN payments: solo las verificadas lo tienen.
 const EVIDENCE_COLUMNS = `
   e.id, e.community_id, e.unit_id, u.code AS unit_code,
+  u.tower AS unit_tower, u.unit_type::text AS unit_type,
   e.member_id, m.full_name AS member_name,
   e.declared_amount::text AS declared_amount, e.declared_paid_at,
   e.declared_method, e.reference, e.notes, e.source, e.evidence_status,
@@ -169,6 +191,8 @@ interface EvidenceRow {
   community_id: string;
   unit_id: string;
   unit_code: string;
+  unit_tower: string | null;
+  unit_type: string;
   member_id: string;
   member_name: string;
   declared_amount: string;
@@ -197,6 +221,8 @@ function mapRow(row: EvidenceRow): Evidence {
     communityId: row.community_id,
     unitId: row.unit_id,
     unitCode: row.unit_code,
+    unitTower: row.unit_tower,
+    unitType: row.unit_type,
     memberId: row.member_id,
     memberName: row.member_name,
     declaredAmount: Number(row.declared_amount),
@@ -544,6 +570,69 @@ export const paymentEvidenceRepository = {
       [paymentId],
     );
     return result.rowCount ?? 0;
+  },
+
+  /**
+   * El comprobante que respalda un PAGO, en su forma mínima para el detalle
+   * del pago: qué es y qué archivos trae. Los enlaces firmados NO viajan aquí —
+   * el cliente los pide con los endpoints de descarga de cada superficie, que
+   * ya validan alcance.
+   *
+   * A lo más una fila: el índice único parcial sobre payment_id garantiza una
+   * evidencia por pago. Se acota a la comunidad del pago para que el alcance
+   * que el caller ya midió sobre el pago valga también para la evidencia.
+   *
+   * `residentUserId` cambia la frontera a la del portal: la evidencia debe ser
+   * de una fila MÍA del padrón (la misma condición que `getMine`, o el enlace
+   * de descarga respondería 404 sobre un archivo que sí se enseñó) Y de una
+   * unidad que sigue siendo mía.
+   */
+  async getSummaryByPaymentId(
+    tx: TxClient,
+    input: {
+      readonly paymentId: string;
+      readonly communityId: string;
+      readonly residentUserId?: string | null;
+    },
+  ): Promise<PaymentEvidenceSummary | null> {
+    const result = await tx.query<{
+      id: string;
+      evidence_status: string;
+      source: string;
+      files: PaymentEvidenceSummaryFile[];
+    }>(
+      `SELECT e.id, e.evidence_status::text AS evidence_status, e.source::text AS source,
+              COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                         'id', f.id, 'filename', f.filename,
+                         'contentType', f.content_type, 'sizeBytes', f.size_bytes)
+                       ORDER BY f.created_at)
+                  FROM billing.payment_evidence_files f
+                 WHERE f.customer_id = e.customer_id
+                   AND f.evidence_id = e.id
+                   AND f.status = 'active'
+              ), '[]'::jsonb) AS files
+         FROM billing.payment_evidence e
+        WHERE e.payment_id = $1
+          AND e.community_id = $2
+          AND e.status != 'deleted'
+          AND ($3::uuid IS NULL OR EXISTS (
+                SELECT 1
+                  FROM community.members m
+                  JOIN community.unit_members um
+                    ON um.member_id = m.id AND um.status = 'active'
+                   AND um.unit_id = e.unit_id
+                 WHERE m.customer_id = e.customer_id
+                   AND m.id = e.member_id
+                   AND m.user_id = $3::uuid
+                   AND m.status = 'active'))
+        LIMIT 1`,
+      [input.paymentId, input.communityId, input.residentUserId ?? null],
+    );
+    const row = result.rows[0];
+    return row === undefined
+      ? null
+      : { id: row.id, evidenceStatus: row.evidence_status, source: row.source, files: row.files };
   },
 
   // --- La frontera del RESIDENTE (cadena del padrón) --------------------------

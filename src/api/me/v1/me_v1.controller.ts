@@ -21,7 +21,12 @@ import {
   type Evidence,
 } from "../../payment-evidence/v1/payment_evidence_v1.repository";
 import { storageClient } from "../../../core/storage/storage_client";
-import { meRepository, type MyPayment, type MyUnit } from "./me_v1.repository";
+import {
+  meRepository,
+  type MyPayment,
+  type MyPaymentDetail,
+  type MyUnit,
+} from "./me_v1.repository";
 
 // Orquestación del recurso me. No hay preHandler de alcance que garantizar:
 // el "alcance" ES el usuario del token (claims.sub), y la pertenencia de cada
@@ -42,6 +47,12 @@ export const meController = {
     return withTransaction(contextFor(req), (tx) =>
       meRepository.listMyPayments(tx, claims.sub, input),
     );
+  },
+
+  /** `null` cuando el pago no es del usuario (o no existe, o está anulado) → 404. */
+  async myPayment(req: FastifyRequest, id: string): Promise<MyPaymentDetail | null> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) => meRepository.myPayment(tx, claims.sub, id));
   },
 
   /** `null` cuando la unidad no es del usuario (o no existe) → 404 en la route. */
@@ -161,7 +172,7 @@ export const meController = {
             error: {
               kind: "conflict" as const,
               message:
-                `Esta unidad ya tiene ${config.visitMaxActivePerUnit} visitas vigentes. ` +
+                `Este domicilio ya tiene ${config.visitMaxActivePerUnit} visitas vigentes. ` +
                 "Cancela alguna antes de registrar otra.",
             },
           };
@@ -180,7 +191,7 @@ export const meController = {
         ok: false,
         error: translatePgError(err, {
           check: "Los datos de la visita no son válidos: revisa fechas, horario y días.",
-          reference: "La unidad no existe o está fuera de tu alcance.",
+          reference: "El domicilio no existe o está fuera de tu alcance.",
         }),
       };
     }
@@ -297,7 +308,7 @@ export const meController = {
       return {
         ok: false,
         error: translatePgError(err, {
-          reference: "La unidad no existe o está fuera de tu alcance.",
+          reference: "El domicilio no existe o está fuera de tu alcance.",
           check: "Los datos del comprobante no son válidos.",
         }),
       };

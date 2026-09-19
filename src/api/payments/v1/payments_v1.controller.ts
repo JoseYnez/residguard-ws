@@ -4,6 +4,8 @@ import {
   contextFor,
   userHasCommunityAccess,
 } from "../../../core/auth/community_access";
+import { PERMISSIONS } from "../../../core/auth/permissions";
+import { hasPermission } from "../../../core/auth/require_permission";
 import { withTransaction } from "../../../core/db/with_transaction";
 import { translatePgError, type MutationResult } from "../../../core/http/pg_errors";
 import { unitLinkedUserIds } from "../../../core/push/unit_recipients";
@@ -11,6 +13,7 @@ import { paymentsNotifier, type PaymentUnitNotice } from "./payments_v1.notifier
 import {
   paymentsRepository,
   type ListPaymentsInput,
+  type PaymentAllocation,
   type PaymentDetail,
   type PaymentListItem,
   type RegisterPaymentInput,
@@ -29,22 +32,42 @@ export async function paymentUnitNotices(
   tx: Parameters<typeof unitLinkedUserIds>[0],
   payment: PaymentDetail,
 ): Promise<PaymentUnitNotice[]> {
-  const byUnit = new Map<string, { unitCode: string; cents: number }>();
+  const byUnit = new Map<
+    string,
+    { unitCode: string; unitTower: string | null; unitType: string; cents: number; covers: string[] }
+  >();
   for (const allocation of payment.allocations) {
-    const current = byUnit.get(allocation.unitId) ?? { unitCode: allocation.unitCode, cents: 0 };
+    const current = byUnit.get(allocation.unitId) ?? {
+      unitCode: allocation.unitCode,
+      unitTower: allocation.unitTower,
+      unitType: allocation.unitType,
+      cents: 0,
+      covers: [],
+    };
     current.cents += Math.round(allocation.amount * 100);
+    current.covers.push(coverLabel(allocation));
     byUnit.set(allocation.unitId, current);
   }
   const notices: PaymentUnitNotice[] = [];
-  for (const [unitId, { unitCode, cents }] of byUnit) {
+  for (const [unitId, unit] of byUnit) {
     notices.push({
       unitId,
-      unitCode,
-      amount: cents / 100,
+      unitCode: unit.unitCode,
+      unitTower: unit.unitTower,
+      unitType: unit.unitType,
+      amount: unit.cents / 100,
+      covers: unit.covers,
       notifyUserIds: await unitLinkedUserIds(tx, unitId),
     });
   }
   return notices;
+}
+
+/** "Mantenimiento, Septiembre-2026" — o solo el concepto en un cargo suelto. */
+function coverLabel(allocation: PaymentAllocation): string {
+  return allocation.coverPeriod === null
+    ? allocation.coverConcept
+    : `${allocation.coverConcept}, ${allocation.coverPeriod}`;
 }
 
 // Orquestación del recurso payments. El pago pertenece a UNA comunidad
@@ -143,8 +166,12 @@ export const paymentsController = {
 
   async getById(req: FastifyRequest, id: string): Promise<PaymentDetail | null> {
     const claims = requireAuth(req);
+    // El comprobante es un EXTRA del detalle: sin `payment_evidence.read` viaja
+    // null y el pago sigue siendo legible (no es un 403). Se resuelve antes de
+    // abrir la transacción — es caché en memoria, no BD.
+    const includeEvidence = await hasPermission(req, PERMISSIONS.paymentEvidenceRead);
     return withTransaction(contextFor(req), (tx) =>
-      paymentsRepository.getById(tx, claims.sub, id),
+      paymentsRepository.getById(tx, claims.sub, id, { includeEvidence }),
     );
   },
 

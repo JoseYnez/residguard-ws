@@ -192,6 +192,8 @@ export const evidenceV1V = new V.ObjectNotNull({
   communityId: new V.StringNotNull(),
   unitId: new V.StringNotNull(),
   unitCode: new V.StringNotNull(),
+  unitTower: new V.String(),
+  unitType: new V.StringNotNull(),
   memberId: new V.StringNotNull(),
   memberName: new V.StringNotNull(),
   declaredAmount: new V.NumberNotNull(),

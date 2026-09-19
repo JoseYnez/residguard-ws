@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 import { pushClient, type PushEnqueueInput } from "../../../core/push/push_client";
+import { homeLabel } from "../../../core/text/home_label";
 import type { Visit } from "./visits_v1.repository";
 
 // Avisos push del dominio `access`: lo que pasa en la caseta se lo cuenta el
@@ -16,6 +17,9 @@ import type { Visit } from "./visits_v1.repository";
 // de todos modos. La salida sí es otro momento y otro aviso; comparte el
 // `tag` para que en pantalla quede el último estado del pase, no una pila.
 // La SPA distingue los casos por `data.kind`.
+//
+// Los textos se leen SIN contexto (pantalla bloqueada) y los lee un residente:
+// nombran el domicilio por su tipo ("tu casa 426-A"), nunca "unidad".
 //
 // Contrato con quien llama: NUNCA lanza y NUNCA se espera. El evento ya
 // quedó commiteado cuando esto corre; si push-service no contesta, el aviso se
@@ -59,33 +63,27 @@ export function isExhaustedByThisEntry(visit: Visit): boolean {
     return visit.maxEntries !== null && visit.entryCount >= visit.maxEntries;
 }
 
-function unitLabel(visit: Visit): string {
-    return visit.unitTower ? `${visit.unitTower} ${visit.unitCode}` : visit.unitCode;
-}
-
 /** Texto del aviso de entrada. Puro y exportado para poder probarlo sin red ni Fastify. */
 export function arrivalMessage(visit: Visit): GateMessage {
-    const arrived = `${visit.visitorName} llegó a la unidad ${unitLabel(visit)}`;
+    const home = homeLabel(visit);
 
     if (!isExhaustedByThisEntry(visit)) {
         return {
             kind: "visit_arrived",
-            title: "Visita en caseta",
-            body: arrived,
+            title: "Llegó tu visita",
+            body: `${visit.visitorName} entró por caseta y va a tu ${home}.`,
             ttlSec: GATE_EVENT_TTL_SEC,
         };
     }
 
-    // `maxEntries` no es null aquí (lo garantiza isExhaustedByThisEntry).
-    const max = visit.maxEntries ?? visit.entryCount;
-    const spent =
-        max === 1
-            ? "Su pase era de una sola entrada y ya quedó usado"
-            : `Su pase ya usó sus ${max} entradas y quedó agotado`;
+    // Mismo título que la llegada: para el residente el hecho es el mismo —
+    // llegó su visita—; que el pase se haya gastado es el detalle del cuerpo.
     return {
         kind: "visit_exhausted",
-        title: "Visita en caseta · pase agotado",
-        body: `${arrived}. ${spent}: si vuelve, registra un pase nuevo.`,
+        title: "Llegó tu visita",
+        body:
+            `${visit.visitorName} entró y va a tu ${home}. ` +
+            "Su pase ya no tiene entradas. Si va a volver, créale uno nuevo.",
         ttlSec: EXHAUSTED_TTL_SEC,
     };
 }
@@ -94,8 +92,8 @@ export function arrivalMessage(visit: Visit): GateMessage {
 export function departureMessage(visit: Visit): GateMessage {
     return {
         kind: "visit_left",
-        title: "Visita salió",
-        body: `${visit.visitorName} salió de la unidad ${unitLabel(visit)}`,
+        title: "Tu visita ya salió",
+        body: `${visit.visitorName} salió por caseta.`,
         ttlSec: GATE_EVENT_TTL_SEC,
     };
 }

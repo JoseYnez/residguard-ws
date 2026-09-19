@@ -36,6 +36,7 @@ export const visitV1V = new V.ObjectNotNull({
     unitId: new V.StringNotNull(),
     unitCode: new V.StringNotNull(),
     unitTower: new V.String(),
+    unitType: new V.StringNotNull(),
     /** Persona del padrón que emitió el pase (quién autorizó la visita). */
     memberId: new V.StringNotNull(),
     memberName: new V.StringNotNull(),

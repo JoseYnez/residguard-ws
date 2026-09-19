@@ -1,5 +1,8 @@
 import type { TxClient } from "../../../core/db/with_transaction";
-import { paymentEvidenceRepository } from "../../payment-evidence/v1/payment_evidence_v1.repository";
+import {
+  paymentEvidenceRepository,
+  type PaymentEvidenceSummary,
+} from "../../payment-evidence/v1/payment_evidence_v1.repository";
 
 // Acceso a datos del recurso payments. El alta va SIEMPRE por
 // billing.sp_register_payment (vía sancionada: valida suma exacta, bloquea
@@ -33,6 +36,10 @@ export interface PaymentAllocation {
   readonly chargeId: string;
   readonly unitId: string;
   readonly unitCode: string;
+  /** Torre y tipo de la unidad: el recibo que saca el RESIDENTE la nombra por
+   *  su tipo ("casa 426-A"); el del operador sigue leyendo el código. */
+  readonly unitTower: string | null;
+  readonly unitType: string;
   readonly communityId: string;
   readonly concept: string;
   readonly amount: number;
@@ -44,10 +51,21 @@ export interface PaymentAllocation {
   readonly periodLabel: string | null;
   readonly periodStart: string | null;
   readonly periodEnd: string | null;
+  /** Lo cubierto, legible ("Mantenimiento ×2" / "Septiembre-2026"; periodo null
+   *  en un cargo suelto). INTERNOS: alimentan el aviso push y el verifier de
+   *  salida los descarta — el cliente arma su propia etiqueta. */
+  readonly coverConcept: string;
+  readonly coverPeriod: string | null;
 }
 
 export interface PaymentDetail extends Payment {
+  /** Quién capturó el pago ("Recibido por" del recibo): `payments.created_by`
+   *  resuelto contra el espejo core.users. null = sin fila de espejo. */
+  readonly createdByName: string | null;
   readonly allocations: PaymentAllocation[];
+  /** Comprobante que respalda el pago. null = no hay (pago de ventanilla sin
+   *  archivo) o el actor no puede verlo (operador sin `payment_evidence.read`). */
+  readonly evidence: PaymentEvidenceSummary | null;
 }
 
 /** Unidad alcanzada por un pago (contexto de display del listado). */
@@ -99,18 +117,25 @@ export interface ListPaymentsInput {
 
 // La caja del depósito viaja resuelta (id + nombre) para que el cliente no
 // tenga que cruzar catálogos. LEFT JOIN: el pago histórico no declara caja.
-const SELECT_COLUMNS = `
+//
+// `created_by_name`: quién capturó el pago, contra el espejo core.users (PK
+// compuesta customer_id + id). LEFT JOIN: un usuario sin fila de espejo deja
+// el nombre en null y el recibo imprime "—", no desaparece el pago.
+export const PAYMENT_DETAIL_COLUMNS = `
   p.id, p.community_id, p.amount::text AS amount, p.method, p.paid_at, p.reference,
   ca.id AS cash_account_id, ca.name AS cash_account_name,
+  cu.full_name AS created_by_name,
   p.status, p.created_at, p.updated_at
 `;
 
-const CASH_ACCOUNT_JOIN = `
+export const PAYMENT_DETAIL_JOINS = `
   LEFT JOIN billing.cash_accounts ca
     ON ca.customer_id = p.customer_id AND ca.id = p.cash_account_id
+  LEFT JOIN core.users cu
+    ON cu.customer_id = p.customer_id AND cu.id = p.created_by
 `;
 
-interface PaymentRow {
+export interface PaymentRow {
   id: string;
   community_id: string;
   amount: string;
@@ -119,12 +144,14 @@ interface PaymentRow {
   reference: string | null;
   cash_account_id: string | null;
   cash_account_name: string | null;
+  /** Solo lo traen las consultas de DETALLE (PAYMENT_DETAIL_COLUMNS). */
+  created_by_name?: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
 }
 
-function mapRow(row: PaymentRow): Payment {
+export function mapRow(row: PaymentRow): Payment {
   return {
     id: row.id,
     communityId: row.community_id,
@@ -151,12 +178,16 @@ interface AllocationRow {
   charge_id: string;
   unit_id: string;
   unit_code: string;
+  unit_tower: string | null;
+  unit_type: string;
   community_id: string;
   concept: string;
   amount: string;
   period_label: string | null;
   period_start: string | null;
   period_end: string | null;
+  cover_concept: string;
+  cover_period: string | null;
 }
 
 function mapAllocationRow(row: AllocationRow): PaymentAllocation {
@@ -165,30 +196,51 @@ function mapAllocationRow(row: AllocationRow): PaymentAllocation {
     chargeId: row.charge_id,
     unitId: row.unit_id,
     unitCode: row.unit_code,
+    unitTower: row.unit_tower,
+    unitType: row.unit_type,
     communityId: row.community_id,
     concept: row.concept,
     amount: Number(row.amount),
     periodLabel: row.period_label,
     periodStart: row.period_start,
     periodEnd: row.period_end,
+    coverConcept: row.cover_concept,
+    coverPeriod: row.cover_period,
   };
 }
 
 /**
- * Aplicaciones activas del pago, SIEMPRE acotadas al alcance del usuario: un
- * depósito puede repartirse entre comunidades y solo se devuelven las de
- * comunidades donde el actor tiene membresía activa. Sin este filtro, ver un
- * pago por una sola de sus comunidades filtraría unidad, concepto e importe de
- * las demás.
+ * Aplicaciones activas del pago. UNA sola consulta para las dos superficies
+ * —el detalle del operador y `GET /me/payments/:id` del residente— porque el
+ * mismo cargo debe llamarse igual en el recibo que emite el administrador y en
+ * el que saca el residente.
+ *
+ * `memberUserId` es la frontera del OPERADOR: un depósito puede repartirse
+ * entre comunidades y solo se devuelven las de comunidades donde el actor
+ * tiene membresía activa. Sin ese filtro, ver un pago por una sola de sus
+ * comunidades filtraría unidad, concepto e importe de las demás.
+ *
+ * Con `null` NO se filtra: es la lectura del residente, cuyo alcance ya midió
+ * el caller sobre el pago (al menos una aplicación sobre una unidad suya). Ve
+ * el depósito COMPLETO a propósito — un mismo folio con dos cifras distintas
+ * confunde más de lo que protege.
  */
-async function fetchAllocations(
+export async function fetchPaymentAllocations(
   tx: TxClient,
   paymentId: string,
-  userId: string,
+  memberUserId: string | null,
 ): Promise<PaymentAllocation[]> {
   const result = await tx.query<AllocationRow>(
     `SELECT pa.id, pa.charge_id, pa.unit_id, u.code AS unit_code,
+            u.tower AS unit_tower, u.unit_type::text AS unit_type,
             c.community_id, f.concept, pa.amount::text AS amount,
+            -- Nombre LEGIBLE de lo cubierto, con el mismo alias que el estado
+            -- de cuenta y "Mis pagos" (concepto con piezas + periodo propio o
+            -- derivado). No viaja en el contrato: lo usa el aviso push.
+            f.concept || CASE WHEN c.quantity > 1 THEN ' ×' || c.quantity ELSE '' END
+              AS cover_concept,
+            COALESCE(fp.label, billing.fn_format_period_es(c.period_start, c.period_end))
+              AS cover_period,
             -- Periodo del cargo por JOIN con fee_periods (no por las columnas
             -- copiadas en el cargo): así el detalle muestra el alias VIGENTE,
             -- igual que la columna "Periodos" del listado. ::text porque
@@ -205,16 +257,49 @@ async function fetchAllocations(
        LEFT JOIN billing.fee_periods fp
          ON fp.customer_id = c.customer_id AND fp.id = c.period_id
        JOIN community.units u ON u.customer_id = pa.customer_id AND u.id = pa.unit_id
-       JOIN community.community_members cm
-         ON cm.customer_id  = c.customer_id
-        AND cm.community_id = c.community_id
-        AND cm.user_id      = $2
-        AND cm.status       = 'active'
       WHERE pa.payment_id = $1 AND pa.status != 'deleted'
-      ORDER BY u.code`,
-    [paymentId, userId],
+        AND ($2::uuid IS NULL OR EXISTS (
+              SELECT 1
+                FROM community.community_members cm
+               WHERE cm.customer_id  = c.customer_id
+                 AND cm.community_id = c.community_id
+                 AND cm.user_id      = $2::uuid
+                 AND cm.status       = 'active'))
+      ORDER BY u.code, c.due_date, c.created_at`,
+    [paymentId, memberUserId],
   );
   return result.rows.map(mapAllocationRow);
+}
+
+/**
+ * Arma el detalle a partir del encabezado ya leído (con PAYMENT_DETAIL_COLUMNS)
+ * — el punto único donde nace un `PaymentDetail`, para que el del operador y
+ * el del residente no puedan divergir en forma.
+ */
+export async function buildPaymentDetail(
+  tx: TxClient,
+  row: PaymentRow,
+  scope: {
+    /** Frontera de las aplicaciones (ver `fetchPaymentAllocations`). */
+    readonly memberUserId: string | null;
+    /** `false` = el actor no puede ver comprobantes → `evidence: null`. */
+    readonly includeEvidence: boolean;
+    /** Frontera del comprobante en el portal (ver `getSummaryByPaymentId`). */
+    readonly residentUserId?: string | null;
+  },
+): Promise<PaymentDetail> {
+  return {
+    ...mapRow(row),
+    createdByName: row.created_by_name ?? null,
+    allocations: await fetchPaymentAllocations(tx, row.id, scope.memberUserId),
+    evidence: scope.includeEvidence
+      ? await paymentEvidenceRepository.getSummaryByPaymentId(tx, {
+          paymentId: row.id,
+          communityId: row.community_id,
+          residentUserId: scope.residentUserId ?? null,
+        })
+      : null,
+  };
 }
 
 export const paymentsRepository = {
@@ -273,7 +358,7 @@ export const paymentsRepository = {
     }
 
     const created = await tx.query<PaymentRow>(
-      `SELECT ${SELECT_COLUMNS} FROM billing.payments p ${CASH_ACCOUNT_JOIN} WHERE p.id = $1`,
+      `SELECT ${PAYMENT_DETAIL_COLUMNS} FROM billing.payments p ${PAYMENT_DETAIL_JOINS} WHERE p.id = $1`,
       [paymentId],
     );
     const row = created.rows[0];
@@ -281,8 +366,10 @@ export const paymentsRepository = {
       throw new Error("sp_register_payment no dejó rastro del pago creado");
     }
     // El alcance ya se validó antes de llamar (todos los cargos son del actor),
-    // así que el filtro de fetchAllocations no resta nada aquí.
-    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id, userId) };
+    // así que el filtro de las aplicaciones no resta nada aquí. Sin comprobante:
+    // un pago recién registrado por esta vía no respalda evidencia alguna (la
+    // verificación estampa el vínculo DESPUÉS, en su propia sp).
+    return buildPaymentDetail(tx, row, { memberUserId: userId, includeEvidence: false });
   },
 
   /**
@@ -398,11 +485,16 @@ export const paymentsRepository = {
    * anuladas no tocaba comunidad alguna y se volvía invisible para todos,
    * incluido su propio dueño.
    */
-  async getById(tx: TxClient, userId: string, id: string): Promise<PaymentDetail | null> {
+  async getById(
+    tx: TxClient,
+    userId: string,
+    id: string,
+    options: { readonly includeEvidence: boolean } = { includeEvidence: false },
+  ): Promise<PaymentDetail | null> {
     const result = await tx.query<PaymentRow>(
-      `SELECT ${SELECT_COLUMNS}
+      `SELECT ${PAYMENT_DETAIL_COLUMNS}
          FROM billing.payments p
-         ${CASH_ACCOUNT_JOIN}
+         ${PAYMENT_DETAIL_JOINS}
          JOIN community.community_members cm
            ON cm.customer_id  = p.customer_id
           AND cm.community_id = p.community_id
@@ -416,7 +508,10 @@ export const paymentsRepository = {
     if (row === undefined) {
       return null;
     }
-    return { ...mapRow(row), allocations: await fetchAllocations(tx, row.id, userId) };
+    return buildPaymentDetail(tx, row, {
+      memberUserId: userId,
+      includeEvidence: options.includeEvidence,
+    });
   },
 
   /**

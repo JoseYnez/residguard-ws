@@ -19,6 +19,7 @@ import {
   listMyEvidenceQueryV1V,
   listMyPaymentsQueryV1V,
   listMyVisitsQueryV1V,
+  myPaymentDetailV1V,
   myPaymentListV1V,
   myUnitListV1V,
   myVisitEventFileParamV1V,
@@ -89,6 +90,27 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         page: q.page,
         pageSize: q.pageSize,
       });
+    },
+  );
+
+  // Un pago mío en detalle: la misma forma que el detalle del operador, para
+  // que la app dibuje el MISMO recibo (folio y QR salen del id). Mismo permiso
+  // que la lista. Ajeno, anulado o inexistente → 404 indistinguible.
+  app.get(
+    "/me/payments/:id",
+    {
+      schema: {
+        params: idParamV1V,
+        response: { 200: myPaymentDetailV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfStatementRead)],
+    },
+    async (req, reply) => {
+      const found = await meController.myPayment(req, req.params.id);
+      if (found === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(found);
     },
   );
 

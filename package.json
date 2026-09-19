@@ -13,7 +13,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --import ./src/test_env.ts --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "dotenv": "^17.4.2",

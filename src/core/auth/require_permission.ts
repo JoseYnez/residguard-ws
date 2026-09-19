@@ -21,6 +21,25 @@ import { getSessionPermissions } from "./permissions_client";
 // Un endpoint de negocio sin `requirePermission` es un bug, no un default.
 
 /**
+ * ¿Trae la sesión el permiso `code`? Para campos OPCIONALES de una respuesta
+ * cuya ruta ya pasó su propio `requirePermission` (el comprobante dentro del
+ * detalle de un pago): sin el permiso el campo viaja vacío, no es un 403.
+ *
+ * Falla CERRADO: sesión revocada o auth_ws caído sin caché → false. La ruta ya
+ * resolvió esos casos con su preHandler un instante antes; aquí solo se decide
+ * si se enseña un extra, y ante la duda no se enseña.
+ */
+export async function hasPermission(req: FastifyRequest, code: PermissionCode): Promise<boolean> {
+    const claims = requireAuth(req);
+    const bearerToken = (req.headers.authorization ?? "").slice("Bearer ".length);
+    const lookup = await getSessionPermissions(claims.sid, bearerToken);
+    if (lookup.kind === "unauthorized" || lookup.kind === "unavailable") {
+        return false;
+    }
+    return lookup.permissions.has(code);
+}
+
+/**
  * preHandler que exige el permiso `code` sobre la tripleta del token validado.
  * Debe ir tras el hook de autenticación (usa `req.auth`).
  *

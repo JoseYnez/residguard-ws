@@ -1,7 +1,8 @@
 import type { FastifyBaseLogger } from "fastify";
 import { pushClient } from "../../../core/push/push_client";
+import { homeLabel } from "../../../core/text/home_label";
 
-// Aviso push "se registró un pago a tu unidad". Lo disparan las DOS vías por
+// Aviso push "recibimos tu pago". Lo disparan las DOS vías por
 // las que nace un pago —el registro directo en ventanilla y la verificación
 // de una evidencia— después del commit, con el mismo contrato que el aviso
 // de caseta: NUNCA lanza, NUNCA se espera, y si push-service no contesta el
@@ -11,13 +12,21 @@ import { pushClient } from "../../../core/push/push_client";
 // y los destinatarios son por unidad: va UN aviso por unidad alcanzada, con
 // el monto que le tocó a esa unidad — al residente de la 12 no le importa que
 // el mismo depósito también pagó la 14.
+//
+// El texto se lee SIN contexto (pantalla bloqueada): nombra el domicilio por
+// su tipo ("tu casa 426-A", nunca "unidad") y dice qué cubrió el dinero.
 
 /** Un pago aplicado a una unidad, ya resuelto a quién avisar. */
 export interface PaymentUnitNotice {
     readonly unitId: string;
     readonly unitCode: string;
+    readonly unitTower: string | null;
+    readonly unitType: string;
     /** Lo aplicado a ESTA unidad (no el total del depósito). */
     readonly amount: number;
+    /** Qué cubrió en ESTA unidad, una entrada por cargo: "Mantenimiento,
+     *  Septiembre-2026" (mismo alias que el estado de cuenta). */
+    readonly covers: readonly string[];
     readonly notifyUserIds: readonly string[];
 }
 
@@ -30,17 +39,41 @@ export interface PaymentRegisteredNotice {
 /** Un pago sigue siendo noticia días después: el residente lo ve cuando lo ve. */
 const PAYMENT_TTL_SEC = 7 * 86_400;
 
-/** Ruta de la SPA a la que navega la notificación al tocarla. */
-const MY_STATEMENT_ROUTE = "/my-statement";
+/** Hasta cuántos cargos se nombran completos; con más, solo el primero y "y N más". */
+const MAX_COVERS_NAMED = 2;
+
+/** Ruta de la SPA al tocar el aviso: "Mis pagos" abierto en ESTE pago. */
+export function paymentClickUrl(paymentId: string): string {
+    return `/my-payments?payment=${paymentId}`;
+}
 
 const MXN = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 
 /** Texto del aviso. Puro y exportado para poder probarlo sin red ni Fastify. */
 export function paymentMessage(unit: PaymentUnitNotice): { title: string; body: string } {
+    const received = `${MXN.format(unit.amount)} de tu ${homeLabel(unit)}.`;
+    const covers = coversSentence(unit.covers);
     return {
-        title: "Pago registrado",
-        body: `Se registró un pago de ${MXN.format(unit.amount)} a la unidad ${unit.unitCode}`,
+        title: "Recibimos tu pago",
+        body: covers === null ? received : `${received} ${covers}`,
     };
+}
+
+/**
+ * "Cubre: Mantenimiento, Septiembre-2026." — hasta dos cargos se nombran
+ * completos; con más, el primero y la cuenta del resto ("Cubre: Mantenimiento,
+ * Septiembre-2026 y 2 más."): el cuerpo de un push se corta pronto y la lista
+ * completa vive en el detalle del pago. `null` sin cargos.
+ */
+function coversSentence(covers: readonly string[]): string | null {
+    const first = covers[0];
+    if (first === undefined) {
+        return null;
+    }
+    if (covers.length <= MAX_COVERS_NAMED) {
+        return `Cubre: ${covers.join("; ")}.`;
+    }
+    return `Cubre: ${first} y ${covers.length - 1} más.`;
 }
 
 export const paymentsNotifier = {
@@ -68,7 +101,7 @@ export const paymentsNotifier = {
                     recipients: unit.notifyUserIds,
                     title: message.title,
                     body: message.body,
-                    clickUrl: MY_STATEMENT_ROUTE,
+                    clickUrl: paymentClickUrl(notice.paymentId),
                     tag: key,
                     urgency: "normal",
                     ttlSec: PAYMENT_TTL_SEC,

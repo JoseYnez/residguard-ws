@@ -64,6 +64,9 @@ export interface Visit {
     readonly unitId: string;
     readonly unitCode: string;
     readonly unitTower: string | null;
+    /** Tipo de la unidad: el portal y los avisos del residente la nombran por
+     *  su tipo ("casa 426-A"); la caseta sigue leyendo torre y código. */
+    readonly unitType: string;
     readonly memberId: string;
     readonly memberName: string;
     readonly code: string;
@@ -192,6 +195,7 @@ export interface VisitRow {
     unit_id: string;
     unit_code: string;
     unit_tower: string | null;
+    unit_type: string;
     member_id: string;
     member_name: string;
     code: string;
@@ -240,6 +244,7 @@ export const VISIT_STATE_EXPR = `
 // zona del proceso — justo el desfase que la zona de operación evita.
 export const VISIT_COLUMNS = `
   v.id, v.community_id, v.unit_id, u.code AS unit_code, u.tower AS unit_tower,
+  u.unit_type::text AS unit_type,
   v.member_id, m.full_name AS member_name,
   v.code, v.visit_type::text, v.schedule_type::text,
   v.visitor_name, v.visitor_company, v.visitor_phone, v.vehicle_plate, v.companions,
@@ -280,6 +285,7 @@ export function mapVisit(row: VisitRow): Visit {
         unitId: row.unit_id,
         unitCode: row.unit_code,
         unitTower: row.unit_tower,
+        unitType: row.unit_type,
         memberId: row.member_id,
         memberName: row.member_name,
         code: row.code,

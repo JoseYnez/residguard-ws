@@ -1,5 +1,12 @@
 import type { TxClient } from "../../../core/db/with_transaction";
 import {
+  buildPaymentDetail,
+  PAYMENT_DETAIL_COLUMNS,
+  PAYMENT_DETAIL_JOINS,
+  type PaymentDetail,
+  type PaymentRow,
+} from "../../payments/v1/payments_v1.repository";
+import {
   reportsRepository,
   type UnitChargeStatement,
 } from "../../reports/v1/reports_v1.repository";
@@ -53,6 +60,9 @@ export interface MyPaymentCover {
   /** Nombre del periodo (label propio o derivado); null = cargo suelto. */
   readonly period: string | null;
   readonly unitCode: string;
+  /** Torre y tipo de la unidad: el portal la nombra por su tipo ("casa 426-A"). */
+  readonly unitTower: string | null;
+  readonly unitType: string;
   /** Lo que ESTA aplicación puso sobre el cargo (≤ su importe). */
   readonly amount: number;
 }
@@ -81,7 +91,21 @@ interface MyPaymentRow {
   paid_at: Date;
   applied_to_mine: string;
   unit_codes: string[];
-  covers: { concept: string; period: string | null; unitCode: string; amount: number }[];
+  covers: {
+    concept: string;
+    period: string | null;
+    unitCode: string;
+    unitTower: string | null;
+    unitType: string;
+    amount: number;
+  }[];
+}
+
+/** Un pago MÍO en detalle: la MISMA forma que ve el operador (con ella la app
+ *  dibuja el mismo recibo) más el nombre de la comunidad, que el residente no
+ *  tiene de dónde sacar — no tiene selector de alcance. */
+export interface MyPaymentDetail extends PaymentDetail {
+  readonly communityName: string;
 }
 
 // Todo ACTIVO de punta a punta: el vínculo del padrón, la asignación, la
@@ -190,7 +214,7 @@ export const meRepository = {
     // enlace por más de un camino — duplicaría la suma aplicada.
     const MY_UNITS_SUBQUERY = `
       JOIN (
-        SELECT DISTINCT u.id, u.code
+        SELECT DISTINCT u.id, u.code, u.tower, u.unit_type::text AS unit_type
           FROM community.members m
           JOIN community.unit_members um
             ON um.member_id = m.id AND um.status = 'active'
@@ -238,6 +262,8 @@ export const meRepository = {
                   'period', COALESCE(fp.label,
                     billing.fn_format_period_es(ch.period_start, ch.period_end)),
                   'unitCode', mu.code,
+                  'unitTower', mu.tower,
+                  'unitType', mu.unit_type,
                   'amount', pa.amount
                 )
                 ORDER BY ch.due_date, ch.created_at
@@ -262,6 +288,54 @@ export const meRepository = {
       })),
       total,
     };
+  },
+
+  /**
+   * Un pago MÍO en detalle — lo que la app necesita para dibujar el MISMO
+   * recibo que emite el administrador. null = inexistente, anulado o ajeno
+   * (404 indistinguible).
+   *
+   * "Mío" = tiene al menos UNA aplicación activa sobre una unidad mía (la
+   * cadena del padrón, igual que listMyPayments). Solo pagos `active`: un pago
+   * anulado no emite recibo y tampoco viaja en la lista.
+   *
+   * Las aplicaciones son TODAS las del depósito, no solo las mías: el recibo
+   * imprime el depósito completo (un mismo folio con dos cifras distintas
+   * confunde). El comprobante, en cambio, sí se acota a lo mío.
+   */
+  async myPayment(tx: TxClient, userId: string, id: string): Promise<MyPaymentDetail | null> {
+    const result = await tx.query<PaymentRow & { community_name: string }>(
+      `SELECT ${PAYMENT_DETAIL_COLUMNS}, co.name AS community_name
+         FROM billing.payments p
+         ${PAYMENT_DETAIL_JOINS}
+         JOIN community.communities co
+           ON co.customer_id = p.customer_id AND co.id = p.community_id
+        WHERE p.id = $2
+          AND p.status = 'active'
+          AND EXISTS (
+                SELECT 1
+                  FROM billing.payment_allocations pa
+                  JOIN community.unit_members um
+                    ON um.unit_id = pa.unit_id AND um.status = 'active'
+                  JOIN community.members m
+                    ON m.id = um.member_id AND m.status = 'active'
+                  JOIN community.units u
+                    ON u.id = um.unit_id AND u.status = 'active'
+                 WHERE pa.payment_id = p.id
+                   AND pa.status = 'active'
+                   AND m.user_id = $1)`,
+      [userId, id],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const detail = await buildPaymentDetail(tx, row, {
+      memberUserId: null,
+      includeEvidence: true,
+      residentUserId: userId,
+    });
+    return { ...detail, communityName: row.community_name };
   },
 
   // --- Mis visitas -----------------------------------------------------------
