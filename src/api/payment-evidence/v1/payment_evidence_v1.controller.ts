@@ -121,9 +121,13 @@ export const paymentEvidenceController = {
    *
    * `memberId` es OPCIONAL porque en el mostrador se escoge la UNIDAD, no la
    * persona: ausente, se deriva del padrón de la unidad (ver
-   * `resolveUnitMember`). Sigue siendo obligatorio en la FILA — una evidencia
-   * declara quién paga — así que una unidad sin padrón se rechaza con un
-   * mensaje que dice qué arreglar, no con un 23503.
+   * `resolveUnitMember`). Y si la unidad NO tiene padrón, el comprobante se
+   * guarda sin persona: registrar un pago no exige que la unidad tenga a
+   * alguien asignado, y el archivo no puede perderse por eso.
+   *
+   * Cuando el operador SÍ nombra a alguien, se valida que su relación con la
+   * unidad esté VIGENTE (no basta con que exista en la comunidad, que es lo
+   * único que garantiza la FK).
    */
   async create(
     req: FastifyRequest,
@@ -152,22 +156,25 @@ export const paymentEvidenceController = {
         if (claimError !== null) {
           return { ok: false as const, error: { kind: "invalid" as const, message: claimError } };
         }
-        // Quién paga: el que nombró el operador o, si no nombró a nadie, el
-        // padrón de la unidad. Que la unidad no tenga a nadie asignado es un
-        // dato faltante del padrón, no un fallo del comprobante — y así se
-        // dice, porque es lo único que el operador puede ir a corregir.
-        const memberId =
-          input.memberId ?? (await paymentEvidenceRepository.resolveUnitMember(tx, input.unitId));
-        if (memberId === null) {
+        // Quién paga. Nombrado por el operador → su relación con la unidad
+        // debe estar VIGENTE (una baja del padrón no firma recibos). Sin
+        // nombrar → el padrón de la unidad, dueño primero; y si la unidad no
+        // tiene a nadie, el comprobante queda SIN persona: no es motivo para
+        // rechazar un pago.
+        if (
+          input.memberId !== null &&
+          !(await paymentEvidenceRepository.isActiveUnitMember(tx, input.unitId, input.memberId))
+        ) {
           return {
             ok: false as const,
             error: {
               kind: "invalid" as const,
-              message:
-                "Esa unidad no tiene a nadie del padrón asignado: registra al residente antes de capturar su comprobante.",
+              message: "Esa persona no está asignada a esa unidad (o su asignación ya no está vigente).",
             },
           };
         }
+        const memberId =
+          input.memberId ?? (await paymentEvidenceRepository.resolveUnitMember(tx, input.unitId));
         if (input.claimedCharges.length > 0) {
           const owned = await paymentEvidenceRepository.countUnitCharges(
             tx,

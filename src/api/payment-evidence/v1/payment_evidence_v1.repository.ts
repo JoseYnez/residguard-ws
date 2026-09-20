@@ -69,8 +69,11 @@ export interface Evidence {
    *  ("casa 426-A"); la bandeja del operador sigue leyendo el código. */
   readonly unitTower: string | null;
   readonly unitType: string;
-  readonly memberId: string;
-  readonly memberName: string;
+  /** Persona del padrón a cuyo nombre queda el comprobante. null SOLO en una
+   *  captura de ventanilla sobre una unidad sin padrón: registrar un pago con
+   *  su comprobante no depende de que la unidad tenga a alguien asignado. */
+  readonly memberId: string | null;
+  readonly memberName: string | null;
   readonly declaredAmount: number;
   readonly declaredPaidAt: string | null;
   readonly declaredMethod: string;
@@ -92,7 +95,8 @@ export interface CreateEvidenceInput {
   readonly customerId: string;
   readonly communityId: string;
   readonly unitId: string;
-  readonly memberId: string;
+  /** null solo con source = "operator" (lo respalda el CHECK de la tabla). */
+  readonly memberId: string | null;
   readonly source: "resident" | "operator";
   readonly declaredAmount: number;
   readonly declaredPaidAt: string | null;
@@ -126,6 +130,26 @@ export interface ListEvidenceInput {
   readonly from?: string | null;
   readonly to?: string | null;
 }
+
+/**
+ * La RELACIÓN vigente entre la persona que firma la evidencia (alias `m`) y la
+ * unidad de la evidencia (alias `e`, con `u` = su unidad). Es lo que hace que
+ * una evidencia sea "mía" en el portal: no basta con que la haya enviado una
+ * fila mía del padrón — esa fila tiene que SEGUIR asignada a la unidad
+ * (`unit_members.status = 'active'`) y la unidad seguir activa, exactamente la
+ * misma cadena que resuelve "mis domicilios". Sin esto, quien dejó una casa
+ * seguiría viendo (y descargando) los comprobantes de esa casa.
+ */
+const RESIDENT_UNIT_LINK = `
+  u.status = 'active'
+  AND EXISTS (
+        SELECT 1
+          FROM community.unit_members um
+         WHERE um.customer_id = e.customer_id
+           AND um.member_id   = m.id
+           AND um.unit_id     = e.unit_id
+           AND um.status      = 'active')
+`;
 
 // Unidad, persona y pago viajan resueltos para que el cliente no cruce
 // catálogos. LEFT JOIN payments: solo las verificadas lo tienen.
@@ -180,7 +204,10 @@ const EVIDENCE_FROM = `
   FROM billing.payment_evidence e
   JOIN community.units u
     ON u.customer_id = e.customer_id AND u.id = e.unit_id
-  JOIN community.members m
+  -- LEFT: una captura de ventanilla puede no tener persona (unidad sin
+  -- padrón). Las consultas del RESIDENTE filtran por m.user_id, así que una
+  -- fila sin persona nunca es "mía" de nadie.
+  LEFT JOIN community.members m
     ON m.customer_id = e.customer_id AND m.id = e.member_id
   LEFT JOIN billing.payments p
     ON p.customer_id = e.customer_id AND p.id = e.payment_id
@@ -193,8 +220,8 @@ interface EvidenceRow {
   unit_code: string;
   unit_tower: string | null;
   unit_type: string;
-  member_id: string;
-  member_name: string;
+  member_id: string | null;
+  member_name: string | null;
   declared_amount: string;
   declared_paid_at: Date | null;
   declared_method: string;
@@ -344,8 +371,9 @@ export const paymentEvidenceRepository = {
    * distintas por el capricho del plan.
    *
    * Solo vínculos y personas VIGENTES: una baja del padrón no vuelve a
-   * aparecer firmando recibos. `null` = la unidad no tiene a nadie asignado,
-   * que el controller traduce a un error de negocio (la columna es NOT NULL).
+   * aparecer firmando recibos. `null` = la unidad no tiene a nadie asignado:
+   * el comprobante se guarda SIN persona (la columna es opcional para la
+   * captura de ventanilla) — una unidad sin padrón también paga.
    */
   async resolveUnitMember(tx: TxClient, unitId: string): Promise<string | null> {
     const result = await tx.query<{ member_id: string }>(
@@ -363,6 +391,32 @@ export const paymentEvidenceRepository = {
       [unitId],
     );
     return result.rows[0]?.member_id ?? null;
+  },
+
+  /**
+   * ¿Tiene esta persona una relación VIGENTE con la unidad? Es la pregunta que
+   * valida a quien el operador NOMBRA como pagador: la FK compuesta solo exige
+   * la misma comunidad, así que sin esto un comprobante podía quedar a nombre
+   * de alguien que ya dejó la casa (relación dada de baja) o que nunca vivió
+   * en ella. Relación, persona y unidad, todas activas — la misma cadena que
+   * "mis domicilios" y que los destinatarios de push.
+   */
+  async isActiveUnitMember(tx: TxClient, unitId: string, memberId: string): Promise<boolean> {
+    const result = await tx.query(
+      `SELECT 1
+         FROM community.unit_members um
+         JOIN community.members m
+           ON m.customer_id  = um.customer_id
+          AND m.community_id = um.community_id
+          AND m.id           = um.member_id
+        WHERE um.unit_id   = $1
+          AND um.member_id = $2
+          AND um.status    = 'active'
+          AND m.status     = 'active'
+        LIMIT 1`,
+      [unitId, memberId],
+    );
+    return (result.rowCount ?? 0) > 0;
   },
 
   /**
@@ -619,13 +673,13 @@ export const paymentEvidenceRepository = {
           AND ($3::uuid IS NULL OR EXISTS (
                 SELECT 1
                   FROM community.members m
-                  JOIN community.unit_members um
-                    ON um.member_id = m.id AND um.status = 'active'
-                   AND um.unit_id = e.unit_id
+                  JOIN community.units u
+                    ON u.customer_id = e.customer_id AND u.id = e.unit_id
                  WHERE m.customer_id = e.customer_id
                    AND m.id = e.member_id
                    AND m.user_id = $3::uuid
-                   AND m.status = 'active'))
+                   AND m.status = 'active'
+                   AND ${RESIDENT_UNIT_LINK}))
         LIMIT 1`,
       [input.paymentId, input.communityId, input.residentUserId ?? null],
     );
@@ -636,7 +690,8 @@ export const paymentEvidenceRepository = {
   },
 
   // --- La frontera del RESIDENTE (cadena del padrón) --------------------------
-  // Mismas proyecciones, otra frontera: e.member_id → members.user_id = sub.
+  // Mismas proyecciones, otra frontera: e.member_id → members.user_id = sub,
+  // Y la relación vigente de esa persona con la unidad (RESIDENT_UNIT_LINK).
   // El residente ve las evidencias de SUS filas del padrón — incluidas las que
   // ventanilla capturó a su nombre, que es exactamente lo que espera ver.
 
@@ -658,6 +713,7 @@ export const paymentEvidenceRepository = {
       WHERE m.user_id = $1
         AND m.status  = 'active'
         AND e.status != 'deleted'
+        AND ${RESIDENT_UNIT_LINK}
         AND ($2::uuid IS NULL OR e.unit_id = $2::uuid)
         AND ($3::billing.payment_evidence_status IS NULL
              OR e.evidence_status = $3::billing.payment_evidence_status)
@@ -665,11 +721,7 @@ export const paymentEvidenceRepository = {
     const params = [userId, unitId, status];
 
     const totalResult = await tx.query<{ count: string }>(
-      `SELECT count(*)::bigint AS count
-         FROM billing.payment_evidence e
-         JOIN community.members m
-           ON m.customer_id = e.customer_id AND m.id = e.member_id
-        ${where}`,
+      `SELECT count(*)::bigint AS count ${EVIDENCE_FROM} ${where}`,
       params,
     );
     const total = Number(totalResult.rows[0]?.count ?? 0);
@@ -691,7 +743,8 @@ export const paymentEvidenceRepository = {
         WHERE e.id = $1
           AND e.status != 'deleted'
           AND m.user_id = $2
-          AND m.status  = 'active'`,
+          AND m.status  = 'active'
+          AND ${RESIDENT_UNIT_LINK}`,
       [id, userId],
     );
     const row = result.rows[0];

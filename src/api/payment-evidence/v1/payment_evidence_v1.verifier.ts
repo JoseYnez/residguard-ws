@@ -73,7 +73,9 @@ export const createMyEvidenceV1V = new V.ObjectNotNull(
 // no está obligado: en ventanilla se escoge la UNIDAD, no la persona — quien
 // llega con el comprobante dice "vengo del 426-A". Ausente, el controller lo
 // deriva del padrón de la unidad (el dueño primero); una unidad sin nadie
-// asignado sí falla, porque toda evidencia declara quién paga.
+// asignado NO falla — el comprobante se guarda sin persona, porque registrar
+// un pago no exige que la unidad tenga padrón. Nombrado, el controller valida
+// que su relación con la unidad esté vigente.
 // Los archivos son opcionales: el comprobante en papel que le llevaron no
 // siempre se digitaliza.
 export const createEvidenceV1V = new V.ObjectNotNull(
@@ -194,8 +196,9 @@ export const evidenceV1V = new V.ObjectNotNull({
   unitCode: new V.StringNotNull(),
   unitTower: new V.String(),
   unitType: new V.StringNotNull(),
-  memberId: new V.StringNotNull(),
-  memberName: new V.StringNotNull(),
+  // null solo en una captura de ventanilla sobre una unidad sin padrón.
+  memberId: new V.String(),
+  memberName: new V.String(),
   declaredAmount: new V.NumberNotNull(),
   declaredPaidAt: new V.String(),
   declaredMethod: new V.StringNotNull(),

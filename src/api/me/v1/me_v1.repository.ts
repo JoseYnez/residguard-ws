@@ -419,7 +419,14 @@ export const meRepository = {
     return { items: itemsResult.rows.map(mapVisit), total };
   },
 
-  /** Un pase MÍO por id. `null` = ajeno o inexistente → 404. */
+  /**
+   * Un pase MÍO por id. `null` = ajeno o inexistente → 404.
+   *
+   * Misma frontera que la lista (listMyVisits): lo emitió mi fila del padrón Y
+   * esa fila SIGUE asignada a la unidad. Sin la segunda mitad, quien dejó una
+   * casa podría seguir abriendo, cancelando y viendo las fotos de los pases de
+   * esa casa con solo conservar el id.
+   */
   async myVisit(tx: TxClient, userId: string, visitId: string): Promise<Visit | null> {
     const result = await tx.query<VisitRow>(
       `SELECT ${VISIT_COLUMNS} ${VISIT_FROM}
@@ -427,7 +434,13 @@ export const meRepository = {
           AND v.status <> 'deleted'
           AND v.member_id = m.id
           AND m.user_id = $1
-          AND m.status = 'active'`,
+          AND m.status = 'active'
+          AND EXISTS (
+                SELECT 1
+                  FROM community.unit_members um
+                 WHERE um.member_id = m.id
+                   AND um.unit_id   = v.unit_id
+                   AND um.status    = 'active')`,
       [userId, visitId],
     );
     const row = result.rows[0];

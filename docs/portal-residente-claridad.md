@@ -166,3 +166,33 @@ conserva la URL como alternativa. Falta redesplegar admin_ws y auth_ws.
 - `unitType`/`unitTower` viajan también en el contrato COMPARTIDO de
   evidencias y visitas (operador incluido): es el mismo objeto, campos aditivos.
 - Mensajes de error de `/me` que lee el residente: "unidad" → "domicilio".
+
+## 8. Ajustes posteriores (2026-09-20)
+
+**Registrar un pago no exige persona del padrón.** El pago simple ya era así;
+el pago CON comprobante capturado en ventanilla fallaba en una unidad sin padrón
+(`billing.payment_evidence.member_id` era NOT NULL).
+
+- BD: `residguard_db/patch_payment_evidence_member_optional.sql` — `member_id`
+  DROP NOT NULL + `ck_payment_evidence_member_by_source` (la persona solo puede
+  faltar con `source = 'operator'`). **Aplicar ANTES de desplegar este ws**: el
+  ws inserta NULL cuando la unidad no tiene padrón y sin el patch esa captura
+  falla con 23502.
+- ws: `Evidence.memberId` / `memberName` pueden ser null; `EVIDENCE_FROM` pasa a
+  LEFT JOIN members; el controller ya no rechaza la unidad sin padrón.
+
+**El estatus de la RELACIÓN miembro↔unidad se valida en todas las fronteras.**
+Ya lo hacían "mis domicilios", estado de cuenta, mis pagos y los destinatarios
+de push (`unitLinkedUserIds`). Faltaba en:
+
+- `listMine` / `getMine` de evidencias (y por tanto la descarga de sus
+  archivos): ahora exigen `RESIDENT_UNIT_LINK` — `unit_members.status = 'active'`
+  entre la persona que firma y la unidad, y la unidad activa.
+- `meRepository.myVisit` (detalle, cancelar y fotos de un pase): misma
+  condición que ya tenía la lista.
+- Pagador NOMBRADO por el operador en ventanilla: `isActiveUnitMember` valida
+  que su relación con la unidad esté vigente (la FK solo garantizaba la misma
+  comunidad). Respuesta 400 legible si no.
+
+Consecuencia buscada: quien deja una casa (relación dada de baja) deja de ver
+sus evidencias y pases de ESA casa, y deja de recibir sus avisos.
