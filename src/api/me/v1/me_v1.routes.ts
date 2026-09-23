@@ -29,6 +29,12 @@ import {
   visitEventFileLinkV1V,
   visitListV1V,
   visitV1V,
+  announcementFileLinkV1V,
+  listMyAnnouncementsQueryV1V,
+  myAnnouncementDetailV1V,
+  myAnnouncementFileParamV1V,
+  myAnnouncementListV1V,
+  unreadAnnouncementCountV1V,
 } from "./me_v1.verifier";
 
 // Recurso me/v1: la AUTOCONSULTA del residente — sus unidades y su estado de
@@ -456,6 +462,112 @@ export async function meV1Routes(instance: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: result.error.kind, message: result.error.message });
       }
       return reply.code(201).send(result.value);
+    },
+  );
+
+  // ─── Comunicados dirigidos a MÍ ────────────────────────────────────────────
+  // Un solo permiso (`self_announcements.read`) para leer y para marcar leído:
+  // marcar leído ES la lectura, y un código aparte viviría siempre concedido
+  // junto al otro. La pertenencia la resuelve la AUDIENCIA del comunicado (la
+  // misma definición que usa el operador), no un parámetro de comunidad.
+
+  app.get(
+    "/me/announcements",
+    {
+      schema: {
+        querystring: listMyAnnouncementsQueryV1V,
+        response: { 200: myAnnouncementListV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfAnnouncementsRead)],
+    },
+    async (req, reply) => {
+      const q = req.query;
+      const result = await meController.listMyAnnouncements(req, {
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      return reply
+        .code(200)
+        .send({ items: result.items, total: result.total, page: q.page, pageSize: q.pageSize });
+    },
+  );
+
+  // El badge del nav. Va ANTES de /me/announcements/:id por claridad; el router
+  // de Fastify ya prefiere la ruta estática sobre la paramétrica.
+  app.get(
+    "/me/announcements/unread-count",
+    {
+      schema: { response: { 200: unreadAnnouncementCountV1V } },
+      preHandler: [requirePermission(PERMISSIONS.selfAnnouncementsRead)],
+    },
+    async (req, reply) => {
+      const count = await meController.myUnreadAnnouncementCount(req);
+      return reply.code(200).send({ count });
+    },
+  );
+
+  // Fuera de la audiencia → 404, indistinguible de inexistente.
+  app.get(
+    "/me/announcements/:id",
+    {
+      schema: {
+        params: idParamV1V,
+        response: { 200: myAnnouncementDetailV1V, 404: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfAnnouncementsRead)],
+    },
+    async (req, reply) => {
+      const found = await meController.myAnnouncement(req, req.params.id);
+      if (found === null) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(200).send(found);
+    },
+  );
+
+  // Marcar leído: acto EXPLÍCITO (no un GET con efecto lateral) e idempotente.
+  app.post(
+    "/me/announcements/:id/read",
+    {
+      schema: { params: idParamV1V },
+      preHandler: [requirePermission(PERMISSIONS.selfAnnouncementsRead)],
+    },
+    async (req, reply) => {
+      const marked = await meController.markMyAnnouncementRead(req, req.params.id);
+      if (!marked) {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  // Adjuntos: enlace firmado de vigencia corta, emitido TRAS comprobar que el
+  // comunicado es de la audiencia del usuario.
+  app.get(
+    "/me/announcements/:id/files/:fileId/link",
+    {
+      schema: {
+        params: myAnnouncementFileParamV1V,
+        response: { 200: announcementFileLinkV1V, 404: errorResponseV1V, 503: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.selfAnnouncementsRead)],
+    },
+    async (req, reply) => {
+      const link = await meController.myAnnouncementFileLink(
+        req,
+        req.params.id,
+        req.params.fileId,
+      );
+      if (link === "not_found") {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (link === "unavailable") {
+        return reply.code(503).send({
+          error: "storage_unavailable",
+          message: "No se pudo generar el enlace de descarga. Intenta de nuevo.",
+        });
+      }
+      return reply.code(200).send(link);
     },
   );
 }

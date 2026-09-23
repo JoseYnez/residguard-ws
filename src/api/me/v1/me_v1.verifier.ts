@@ -1,5 +1,5 @@
 import { Verifiers as V } from "structure-verifier";
-import { errorResponseV1V, pageQueryFields } from "../../common/common_v1.verifier";
+import { errorResponseV1V, pageQueryFields, UUID_REGEX } from "../../common/common_v1.verifier";
 import { paymentDetailFields } from "../../payments/v1/payments_v1.verifier";
 import { unitChargeStatementV1V, unitStatementQueryV1V } from "../../reports/v1/reports_v1.verifier";
 
@@ -116,3 +116,75 @@ export {
 // El checklist de cargos del envío reusa el contrato del recurso charges: el
 // cargo que el residente marca y el que lista el operador son el MISMO objeto.
 export { chargeListV1V } from "../../charges/v1/charges_v1.verifier";
+
+// --- Comunicados dirigidos a MÍ -----------------------------------------------
+// Proyección de LECTURA: el residente ve el comunicado, no su maquinaria. Del
+// contrato del operador NO viaja nada de la audiencia (a quién más le llegó no
+// es asunto suyo) ni el conteo de lecturas; lo que se añade es `read`.
+export const listMyAnnouncementsQueryV1V = new V.ObjectNotNull(
+  { ...pageQueryFields() },
+  { strictMode: true },
+);
+
+export const myAnnouncementV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  communityId: new V.StringNotNull(),
+  /** La app solo lo muestra si el usuario tiene unidades en más de una. */
+  communityName: new V.StringNotNull(),
+  title: new V.StringNotNull(),
+  excerpt: new V.StringNotNull(),
+  isPinned: new V.BooleanNotNull(),
+  publishedAt: new V.StringNotNull(),
+  /** No nulo = corregido tras publicar (la tarjeta dice "editado"). */
+  editedAt: new V.String(),
+  fileCount: new V.NumberNotNull(),
+  read: new V.BooleanNotNull(),
+});
+
+export const myAnnouncementFileV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  filename: new V.StringNotNull(),
+  contentType: new V.StringNotNull(),
+  sizeBytes: new V.NumberNotNull(),
+  sortOrder: new V.NumberNotNull(),
+});
+
+export const myAnnouncementDetailV1V = new V.ObjectNotNull({
+  id: new V.StringNotNull(),
+  communityId: new V.StringNotNull(),
+  communityName: new V.StringNotNull(),
+  title: new V.StringNotNull(),
+  excerpt: new V.StringNotNull(),
+  isPinned: new V.BooleanNotNull(),
+  publishedAt: new V.StringNotNull(),
+  editedAt: new V.String(),
+  fileCount: new V.NumberNotNull(),
+  read: new V.BooleanNotNull(),
+  /** Markdown acotado tal cual se guardó: el render vive en la SPA. */
+  body: new V.StringNotNull(),
+  files: new V.ArrayNotNull(myAnnouncementFileV1V),
+});
+
+export const myAnnouncementListV1V = new V.ObjectNotNull({
+  items: new V.ArrayNotNull(myAnnouncementV1V),
+  total: new V.NumberNotNull(),
+  page: new V.NumberNotNull(),
+  pageSize: new V.NumberNotNull(),
+});
+
+/** El número del badge del nav, y nada más. */
+export const unreadAnnouncementCountV1V = new V.ObjectNotNull({
+  count: new V.NumberNotNull(),
+});
+
+/** Params de un adjunto: /me/announcements/:id/files/:fileId/link */
+export const myAnnouncementFileParamV1V = new V.ObjectNotNull(
+  {
+    id: new V.StringNotNull({ regex: UUID_REGEX }),
+    fileId: new V.StringNotNull({ regex: UUID_REGEX }),
+  },
+  { strictMode: true },
+);
+
+/** El enlace firmado reusa el contrato de los demás adjuntos del portal. */
+export { announcementFileLinkV1V } from "../../announcements/v1/announcements_v1.verifier";

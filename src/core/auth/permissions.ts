@@ -205,6 +205,38 @@ export const PERMISSIONS = {
     // residente (decisión del usuario). El operador consulta y valida.
     visitsRead: "visits.read",
     visitsCheckin: "visits.checkin",
+
+    // Comunicados del residente (rutas /me/announcements). Mismo alcance que el
+    // resto de /me/*: la cadena del padrón — pero aquí la pertenencia se filtra
+    // además por la AUDIENCIA del comunicado (la regla congelada al publicar,
+    // evaluada en vivo contra el padrón). Un solo código: marcar leído no tiene
+    // el suyo porque es la lectura misma, y un permiso aparte viviría siempre
+    // concedido junto a este.
+    selfAnnouncementsRead: "self_announcements.read",
+
+    // --- Comunicados del lado de la OPERACIÓN -------------------------------
+    // `announcements.read` cubre la bandeja, el detalle y QUIÉN leyó cada uno.
+    //
+    // PUBLICAR es `execute` y no parte de `.update` por la misma razón que
+    // `visits.checkin`: manda un aviso push a toda la audiencia, congela la
+    // audiencia del comunicado y no se deshace. Redactar borradores es otra
+    // cosa, y hay quien debe poder hacer una sin la otra.
+    //
+    // Fijar, archivar y dar de baja son `.update`: la baja es lógica y se
+    // autoriza con `.update`, como manda la convención.
+    announcementsRead: "announcements.read",
+    announcementsCreate: "announcements.create",
+    announcementsUpdate: "announcements.update",
+    announcementsPublish: "announcements.publish",
+
+    // Grupos de audiencia: la REGLA sobre el padrón (tipo de persona + torre)
+    // con la que se elige a quién va un comunicado. Recurso propio aunque se
+    // administren DENTRO de la pantalla de comunicados (no tienen pantalla
+    // propia): quién puede definir audiencias es una decisión distinta de quién
+    // puede escribir. Sin `.delete`: baja lógica con `.update`.
+    audienceGroupsRead: "audience_groups.read",
+    audienceGroupsCreate: "audience_groups.create",
+    audienceGroupsUpdate: "audience_groups.update",
 } as const;
 
 /** Unión de todos los códigos FUNCIONALES del catálogo. El guard solo acepta
@@ -265,6 +297,12 @@ export const SCREEN_PERMISSIONS = {
     visits: "screens.visits",
     gate: "screens.gate",
     paymentEvidence: "screens.payment_evidence",
+    // Comunicados: la de operación lleva los grupos de audiencia como una
+    // PESTAÑA dentro, así que no hay `screens.audience_groups` — quien
+    // administra grupos entra por aquí, y el permiso funcional
+    // `audience_groups.*` es el que decide si puede tocarlos.
+    announcements: "screens.announcements",
+    myAnnouncements: "screens.my_announcements",
 } as const;
 
 /** Unión de los códigos de pantalla. Ningún guard de este servicio los acepta. */

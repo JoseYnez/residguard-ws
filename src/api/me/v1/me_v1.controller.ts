@@ -23,6 +23,8 @@ import {
 import { storageClient } from "../../../core/storage/storage_client";
 import {
   meRepository,
+  type MyAnnouncement,
+  type MyAnnouncementDetail,
   type MyPayment,
   type MyPaymentDetail,
   type MyUnit,
@@ -367,5 +369,77 @@ export const meController = {
       return link.status === 404 ? "not_found" : "unavailable";
     }
     return link.value;
+  },
+
+  // ─── Comunicados dirigidos a MÍ ──────────────────────────────────────────
+
+  async listMyAnnouncements(
+    req: FastifyRequest,
+    input: { readonly page: number; readonly pageSize: number },
+  ): Promise<{ items: MyAnnouncement[]; total: number }> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.listMyAnnouncements(tx, claims.sub, input),
+    );
+  },
+
+  /** El número del badge del nav. Barato a propósito: se pide al entrar, al
+   *  invalidar la clave y al llegar un push. */
+  async myUnreadAnnouncementCount(req: FastifyRequest): Promise<number> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.myUnreadAnnouncementCount(tx, claims.sub),
+    );
+  },
+
+  async myAnnouncement(
+    req: FastifyRequest,
+    announcementId: string,
+  ): Promise<MyAnnouncementDetail | null> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.myAnnouncement(tx, claims.sub, announcementId),
+    );
+  },
+
+  /** Marcar leído es EXPLÍCITO (no el efecto lateral de un GET) e idempotente:
+   *  tocarlo dos veces deja una sola fila. */
+  async markMyAnnouncementRead(req: FastifyRequest, announcementId: string): Promise<boolean> {
+    const claims = requireAuth(req);
+    return withTransaction(contextFor(req), (tx) =>
+      meRepository.markMyAnnouncementRead(tx, claims.sub, claims.customerId, announcementId),
+    );
+  },
+
+  /** Enlace firmado de un adjunto de un comunicado MÍO: primero la audiencia,
+   *  después el enlace con la API key del servicio. */
+  async myAnnouncementFileLink(
+    req: FastifyRequest,
+    announcementId: string,
+    fileId: string,
+  ): Promise<
+    | { url: string; expiresAt: string; filename: string; contentType: string }
+    | "not_found"
+    | "unavailable"
+  > {
+    const claims = requireAuth(req);
+    const ref = await withTransaction(contextFor(req), (tx) =>
+      meRepository.myAnnouncementFileRef(tx, claims.sub, announcementId, fileId),
+    );
+    if (ref === null) {
+      return "not_found";
+    }
+    const link = await storageClient.createDownloadLink(ref.storageFileId);
+    if (!link.ok) {
+      return link.status === 404 ? "not_found" : "unavailable";
+    }
+    // El nombre y el tipo viajan con el enlace: con ellos la app decide entre
+    // abrir la imagen en el visor o bajar el PDF, sin otra llamada.
+    return {
+      url: link.value.url,
+      expiresAt: link.value.expiresAt,
+      filename: ref.filename,
+      contentType: ref.contentType,
+    };
   },
 };

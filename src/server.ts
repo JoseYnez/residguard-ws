@@ -26,6 +26,7 @@ import { cashAccountsV1Routes } from "./api/cash-accounts/v1/cash_accounts_v1.ro
 import { cashTransfersV1Routes } from "./api/cash-transfers/v1/cash_transfers_v1.routes";
 import { reportsV1Routes } from "./api/reports/v1/reports_v1.routes";
 import { visitsV1Routes } from "./api/visits/v1/visits_v1.routes";
+import { announcementsV1Routes } from "./api/announcements/v1/announcements_v1.routes";
 import { meV1Routes } from "./api/me/v1/me_v1.routes";
 
 async function main(): Promise<void> {
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
     await app.register(cashTransfersV1Routes);
     await app.register(reportsV1Routes);
     await app.register(visitsV1Routes);
+    await app.register(announcementsV1Routes);
     await app.register(meV1Routes);
 
     await app.listen({ port: config.port, host: config.host });

@@ -47,7 +47,8 @@ residguard_ws/
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
 │   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
 │   │   ├── visits/v1/               ← registro previo de visitas, lado OPERACIÓN: bitácora de la comunidad, consulta de un código en caseta y check-in
-│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/payments[/:id], /me/visits, /me/payment-evidence): alcance por vínculo del padrón, no por community_members
+│   │   ├── announcements/v1/        ← comunicados, lado OPERACIÓN: redactar, publicar (push), quién leyó, y los grupos de audiencia (regla sobre el padrón)
+│   │   └── me/v1/                   ← autoconsulta del residente (/me/units, /me/units/:id/statement, /me/payments[/:id], /me/visits, /me/payment-evidence, /me/announcements): alcance por vínculo del padrón, no por community_members
 │   ├── core/
 │   │   ├── db/                      ← pool + with_transaction (GUCs auditoría + tenant)
 │   │   ├── audit/                   ← AuditContext + builder
@@ -61,7 +62,8 @@ residguard_ws/
 │   │   ├── platform/
 │   │   │   └── tenant_admin_client.ts ← cliente de la superficie tenant de admin_ws (invitaciones)
 │   │   ├── text/
-│   │   │   └── home_label.ts        ← cómo se le NOMBRA su domicilio al residente ("casa 426-A"): solo avisos push; lo administrativo sigue diciendo "unidad"
+│   │   │   ├── home_label.ts        ← cómo se le NOMBRA su domicilio al residente ("casa 426-A"): solo avisos push; lo administrativo sigue diciendo "unidad"
+│   │   │   └── markdown_plain.ts    ← markdown acotado → texto plano (cuerpo del push y extracto de la lista); no es sanitizador, no produce HTML
 │   │   ├── storage/
 │   │   │   └── storage_client.ts    ← cliente server-to-server (X-Api-Key) de storage-service: valida archivos de evidencias y emite enlaces firmados
 │   │   └── http/                    ← error handler + traducción de errores PG
@@ -101,7 +103,7 @@ responsabilidad por archivo que en `admin_ws`.
    `admin_project/db/99_seed_residguard_app.sql`, y se gestiona desde
    `admin_ws` (que ya es genérico por app). Este servicio **solo valida**; no
    expone CRUD de permisos ni de roles.
-   - Códigos: convención `recurso.accion` (61 funcionales + 24 de pantalla). La baja es lógica y
+   - Códigos: convención `recurso.accion` (69 funcionales + 27 de pantalla). La baja es lógica y
      en general se autoriza con `.update` (igual que en `admin_ws`);
      **`units.delete` es la excepción**: la baja de unidades tiene permiso
      propio. `payments.revoke`, `charges.revoke`, `waivers.create` y
@@ -161,6 +163,17 @@ responsabilidad por archivo que en `admin_ws`.
      unidad. Las dos comparten `visits_v1.repository` —proyección, estado
      derivado y veredicto— porque una segunda implementación del "¿puede
      pasar?" acabaría contradiciendo a la primera.
+   - **Comunicados: las mismas dos superficies, y una tercera frontera.**
+     `announcements/v1` (redactar, publicar, quién leyó, grupos) va anidado bajo
+     `/communities/:communityId`; `/me/announcements` NO usa la cadena del
+     padrón sin más: usa la **AUDIENCIA** del comunicado —`AUDIENCE_MATCHES_USER`
+     de `announcements_v1.repository`, la misma definición que cuenta el alcance
+     y resuelve los destinatarios del push— así que estar en la comunidad no
+     basta: hay que casar con la regla. La regla se **congela** en el comunicado
+     al publicar (a quién IBA no se reescribe) pero las PERSONAS se evalúan en
+     vivo contra el padrón. Publicar es `execute` aparte (`announcements.publish`)
+     porque dispara el push a toda la audiencia y no se deshace; el aviso sale
+     DESPUÉS del commit y nunca se espera.
 6. Recurso fuera del alcance → **404**, indistinguible de inexistente.
    El **primer** miembro de una comunidad lo crea `POST /communities` en la
    misma transacción (el actor queda como miembro de lo que acaba de crear);

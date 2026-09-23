@@ -1,4 +1,10 @@
 import type { TxClient } from "../../../core/db/with_transaction";
+import { plainExcerpt } from "../../../core/text/markdown_plain";
+import {
+  announcementsRepository,
+  AUDIENCE_MATCHES_USER,
+  EXCERPT_LENGTH,
+} from "../../announcements/v1/announcements_v1.repository";
 import {
   buildPaymentDetail,
   PAYMENT_DETAIL_COLUMNS,
@@ -121,6 +127,91 @@ const MY_UNITS_CHAIN = `
     ON c.id = m.community_id AND c.status = 'active'
  WHERE m.user_id = $1 AND m.status = 'active'
 `;
+
+// --- Comunicados del residente ------------------------------------------------
+// Proyección de LECTURA: el residente ve el comunicado, no su maquinaria (la
+// regla de audiencia, el conteo de lecturas, el snapshot). Lo único suyo que
+// añade es `read`.
+
+export interface MyAnnouncement {
+  readonly id: string;
+  readonly communityId: string;
+  readonly communityName: string;
+  readonly title: string;
+  /** Dos renglones de la tarjeta: el cuerpo sin markdown, ya recortado. */
+  readonly excerpt: string;
+  readonly isPinned: boolean;
+  readonly publishedAt: string;
+  /** No nulo = se corrigió tras publicar; la tarjeta dice "editado". */
+  readonly editedAt: string | null;
+  readonly fileCount: number;
+  readonly read: boolean;
+}
+
+export interface MyAnnouncementFile {
+  readonly id: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly sortOrder: number;
+}
+
+export interface MyAnnouncementDetail extends MyAnnouncement {
+  readonly body: string;
+  readonly files: MyAnnouncementFile[];
+}
+
+interface MyAnnouncementRow {
+  id: string;
+  community_id: string;
+  community_name: string;
+  title: string;
+  body_head: string;
+  is_pinned: boolean;
+  published_at: Date;
+  edited_at: Date | null;
+  file_count: number;
+  read: boolean;
+}
+
+// La comunidad se JOINea activa: desactivarla cierra el portal de todo lo que
+// cuelga de ella, igual que en el resto del servicio.
+const MY_ANNOUNCEMENT_FROM = `
+  FROM communication.announcements a
+  JOIN community.communities c
+    ON c.customer_id = a.customer_id AND c.id = a.community_id AND c.status = 'active'
+`;
+
+const MY_ANNOUNCEMENT_COLUMNS = `
+  a.id, a.community_id, c.name AS community_name, a.title,
+  left(a.body, 400) AS body_head, a.is_pinned, a.published_at, a.edited_at,
+  (SELECT count(*)::int
+     FROM communication.announcement_files f
+    WHERE f.customer_id     = a.customer_id
+      AND f.announcement_id = a.id
+      AND f.status          = 'active') AS file_count,
+  EXISTS (SELECT 1
+            FROM communication.announcement_reads r
+           WHERE r.customer_id     = a.customer_id
+             AND r.announcement_id = a.id
+             AND r.user_id         = $1
+             AND r.status          = 'active') AS read
+`;
+
+function mapMyAnnouncement(row: MyAnnouncementRow): MyAnnouncement {
+  return {
+    id: row.id,
+    communityId: row.community_id,
+    communityName: row.community_name,
+    title: row.title,
+    excerpt: plainExcerpt(row.body_head, EXCERPT_LENGTH),
+    isPinned: row.is_pinned,
+    publishedAt: row.published_at.toISOString(),
+    editedAt: row.edited_at?.toISOString() ?? null,
+    fileCount: row.file_count,
+    read: row.read,
+  };
+}
 
 export const meRepository = {
   /**
@@ -502,5 +593,153 @@ export const meRepository = {
   /** Pases vigentes de una unidad mía — el tope anti-abuso del alta. */
   async countActiveVisitsForUnit(tx: TxClient, unitId: string): Promise<number> {
     return visitsRepository.countActiveForUnit(tx, unitId);
+  },
+
+  // ─── Comunicados dirigidos a MÍ ──────────────────────────────────────────
+  // La pertenencia sale de la MISMA definición de audiencia que usa el lado de
+  // la operación (AUDIENCE_MATCHES_USER del repositorio de announcements): el
+  // comunicado se evalúa contra su regla CONGELADA y contra el padrón VIVO, así
+  // que quien llegó ayer ve lo fijado y quien se dio de baja deja de verlo.
+  // Una segunda implementación de "¿le tocaba?" acabaría contradiciendo a la
+  // primera — mismo criterio que el veredicto único de visitas.
+
+  /**
+   * Mis comunicados publicados, fijados primero y el resto de nuevo a viejo.
+   * Solo `published`: archivar lo saca del portal (y sigue vivo para el
+   * operador).
+   */
+  async listMyAnnouncements(
+    tx: TxClient,
+    userId: string,
+    input: { readonly page: number; readonly pageSize: number },
+  ): Promise<{ items: MyAnnouncement[]; total: number }> {
+    const where = `
+      WHERE a.status = 'active'
+        AND a.publication_status = 'published'
+        AND ${AUDIENCE_MATCHES_USER}
+    `;
+
+    const totalResult = await tx.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count
+         FROM communication.announcements a ${where}`,
+      [userId],
+    );
+
+    const itemsResult = await tx.query<MyAnnouncementRow>(
+      `SELECT ${MY_ANNOUNCEMENT_COLUMNS}
+         ${MY_ANNOUNCEMENT_FROM}
+         ${where}
+        ORDER BY a.is_pinned DESC, a.published_at DESC
+        LIMIT $2 OFFSET $3`,
+      [userId, input.pageSize, (input.page - 1) * input.pageSize],
+    );
+
+    return {
+      items: itemsResult.rows.map(mapMyAnnouncement),
+      total: Number(totalResult.rows[0]?.count ?? 0),
+    };
+  },
+
+  /** El número del badge: mis comunicados publicados que todavía no abro. */
+  async myUnreadAnnouncementCount(tx: TxClient, userId: string): Promise<number> {
+    const result = await tx.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count
+         FROM communication.announcements a
+        WHERE a.status = 'active'
+          AND a.publication_status = 'published'
+          AND ${AUDIENCE_MATCHES_USER}
+          AND NOT EXISTS (
+                SELECT 1 FROM communication.announcement_reads r
+                 WHERE r.customer_id     = a.customer_id
+                   AND r.announcement_id = a.id
+                   AND r.user_id         = $1
+                   AND r.status          = 'active')`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  },
+
+  /** Un comunicado MÍO con su cuerpo y adjuntos. Fuera de audiencia → null. */
+  async myAnnouncement(
+    tx: TxClient,
+    userId: string,
+    announcementId: string,
+  ): Promise<MyAnnouncementDetail | null> {
+    const result = await tx.query<MyAnnouncementRow & { body: string }>(
+      `SELECT ${MY_ANNOUNCEMENT_COLUMNS}, a.body
+         ${MY_ANNOUNCEMENT_FROM}
+        WHERE a.id = $2
+          AND a.status = 'active'
+          AND a.publication_status = 'published'
+          AND ${AUDIENCE_MATCHES_USER}`,
+      [userId, announcementId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const files = await announcementsRepository.listFiles(tx, announcementId);
+    return {
+      ...mapMyAnnouncement(row),
+      body: row.body,
+      files: files.map((file) => ({
+        id: file.id,
+        filename: file.filename,
+        contentType: file.contentType,
+        sizeBytes: file.sizeBytes,
+        sortOrder: file.sortOrder,
+      })),
+    };
+  },
+
+  /**
+   * Marca leído. IDEMPOTENTE: el índice único es PARCIAL
+   * (`WHERE status <> 'deleted'`), así que el ON CONFLICT repite el predicado o
+   * no infiere el índice y el segundo toque reventaría con un 23505.
+   *
+   * Devuelve false si el comunicado no es suyo (404, indistinguible).
+   */
+  async markMyAnnouncementRead(
+    tx: TxClient,
+    userId: string,
+    customerId: string,
+    announcementId: string,
+  ): Promise<boolean> {
+    const visible = await tx.query(
+      `SELECT 1
+         FROM communication.announcements a
+        WHERE a.id = $2
+          AND a.status = 'active'
+          AND a.publication_status = 'published'
+          AND ${AUDIENCE_MATCHES_USER}`,
+      [userId, announcementId],
+    );
+    if ((visible.rowCount ?? 0) === 0) {
+      return false;
+    }
+    await tx.query(
+      `INSERT INTO communication.announcement_reads
+         (customer_id, announcement_id, user_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (customer_id, announcement_id, user_id)
+         WHERE status <> 'deleted'
+       DO NOTHING`,
+      [customerId, announcementId, userId],
+    );
+    return true;
+  },
+
+  /** Referencia de storage de un adjunto de un comunicado MÍO. */
+  async myAnnouncementFileRef(
+    tx: TxClient,
+    userId: string,
+    announcementId: string,
+    fileId: string,
+  ): Promise<{ storageFileId: string; filename: string; contentType: string } | null> {
+    const mine = await this.myAnnouncement(tx, userId, announcementId);
+    if (mine === null) {
+      return null;
+    }
+    return announcementsRepository.fileRef(tx, announcementId, fileId);
   },
 };
