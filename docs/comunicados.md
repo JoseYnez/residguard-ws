@@ -3,8 +3,14 @@
 > Documento hermano: `residguard_app/docs/comunicados.md` (pantallas). Si algo
 > aquí choca con un `CLAUDE.md`, mandan las reglas del `CLAUDE.md`.
 >
-> Estado: **PLANEACIÓN** (2026-09-20). Nada implementado. Las decisiones
-> marcadas ⚠ en §2 están recomendadas pero sin confirmar.
+> Estado: **FASES 1 A 6 IMPLEMENTADAS** (2026-09-21/22), sin commitear — el
+> diff vive en el working tree de `residguard_db`, `residguard_ws`,
+> `residguard_app` y `admin_project/db`. Las decisiones ⚠ de §2 quedaron
+> **confirmadas** por el usuario y se implementaron tal cual.
+>
+> Falta la **fase 7**: aplicar los patches y desplegar (ver §6). La
+> verificación LOCAL ya está hecha: tests, BD desechable, integración del SQL
+> real y la app manejada en el navegador con mocks.
 
 ---
 
@@ -100,13 +106,40 @@ Clave de tenant `uq (customer_id, id)`.
 `read_at`. `uq (customer_id, announcement_id, user_id)`; alta con
 `ON CONFLICT DO NOTHING`. Lleva triggers estándar (la regla §11 no exceptúa).
 
-### 3.3 Entregables
+### 3.3 Entregables — HECHO (2026-09-20, sin commitear)
 
-- `06_communication_tables.sql` + renumerar roles a `07_` + bloque en `init.sql`
-  (A/B) y grants/RLS en el Bloque C (`GRANT USAGE`, default privileges, 4
-  políticas `tenant_scope_*`).
-- `patch_announcements.sql` idempotente para staging/prod.
-- Validación: BD desechable desde `init.sql`; init viejo + patch ×2 ≡ init nuevo.
+- `06_communication_tables.sql` (schema, type y las 4 tablas con columnas
+  estándar, FKs compuestas, claves de tenant, unicidad parcial, índices por FK
+  y los dos triggers) + renumeración de roles a `07_roles_and_security.sql`
+  (cambio aparte, con sus referencias en `CLAUDE.md` de la BD, `init.sql` y
+  `05_access_tables.sql`) + bloque `B.9` en `init.sql` y grants/RLS en el
+  Bloque C (`REVOKE` de PUBLIC, `GRANT USAGE`, 4 grants de tabla, default
+  privileges y 4 políticas `tenant_scope_*`).
+- `patch_announcements.sql` idempotente (guard → ROLLBACK inocuo al repetir).
+- Dos afinados respecto al plan, ambos por el §13 del `CLAUDE.md` de la BD:
+  los CHECK de arreglo no vacío usan `cardinality()` y **no** `array_length()`
+  (`array_length('{}',1)` devuelve `NULL` y un CHECK que evalúa a `NULL` PASA),
+  y `uq_announcement_reads_announcement_user` es un índice único **parcial**
+  (`WHERE status <> 'deleted'`), así que el `ON CONFLICT` del alta debe repetir
+  el predicado para que la inferencia lo encuentre.
+- Validación en Docker (`postgres:17`), tres BD desechables ya borradas:
+  init.sql nuevo ≡ init.sql de master + `patch_announcements.sql` (dump con
+  privilegios y dueños: idéntico salvo el token aleatorio `\restrict` de
+  pg_dump 17); la segunda aplicación del patch aborta con el guard; y la cadena
+  modular `pre_setup → 00…07` ≡ init.sql **sin una sola diferencia en
+  `communication`**. Prueba funcional como `role_app` (RLS activo): 7 rechazos
+  esperados (unicidad de nombre ignorando mayúsculas, grupo sin criterios,
+  arreglo vacío, las dos direcciones del CHECK de `published_at`, escritura
+  cruzada de tenant, `DELETE` denegado), marcar leído dos veces deja una fila,
+  el soft delete libera la unicidad parcial, y los 8 triggers registraron en
+  `audit.event_log`.
+- ⚠ **Deriva PREEXISTENTE detectada de paso** (no tocada, es de otro cambio):
+  `07_roles_and_security.sql` —antes `06_`— nunca recibió lo de
+  `patch_payment_evidence.sql`. Una instalación por scripts modulares deja
+  `billing.payment_evidence`, `payment_evidence_files` y
+  `payment_evidence_charges` **sin RLS y sin grants**, y sin el `GRANT EXECUTE`
+  de `sp_verify_payment_evidence`. `init.sql` sí los tiene (producción se
+  instaló de ahí). Arreglarlo son 3 bloques RLS + 4 grants en ese archivo.
 
 ## 4. Permisos (paridad a cuatro lados)
 
@@ -174,20 +207,75 @@ Helper puro nuevo `core/text/markdown_plain.ts` (+ test) para el extracto.
 
 ## 6. Fases
 
-1. **BD** — §3 completo + validación en BD desechable.
-2. **Permisos** — los dos SQL + los dos espejos TS.
-3. **ws operación** — grupos, comunicados, publish, reads, preview.
-4. **ws residente + push** — `/me/announcements*`, notifier, tests de las
-   funciones puras (mensaje, extracto).
-5. **app operación** y 6. **app residente** — ver doc hermano.
-7. **Verificación y despliegue** — orden: `patch_announcements.sql` (residguard_db)
-   → `patch_announcements_platform.sql` (auth_db) → ws + app JUNTOS. Sin env nuevas.
+1. ~~**BD**~~ **HECHA** — ver §3.3.
+2. ~~**Permisos**~~ **HECHA** — los 10 códigos en los CUATRO lados:
+   `admin_project/db/99_patch_residguard_announcements.sql`,
+   `residguard_db/externos/patch_announcements_platform.sql` (ids literales,
+   incluye el rol `admin` de producción y la re-materialización que preserva
+   exclusiones), `residguard_ws/src/core/auth/permissions.ts` y
+   `residguard_app/src/app/core/session/permissions.ts`.
+3. ~~**ws operación**~~ **HECHA** — `api/announcements/v1` (cuatro archivos):
+   CRUD de comunicados, `publish` (409 si ya no es borrador), `archive`,
+   lecturas con filtro, enlace firmado de adjuntos, CRUD de grupos y
+   `audience-groups/preview`. `AUDIENCE_MATCH` vive UNA vez en el repositorio.
+4. ~~**ws residente + push**~~ **HECHA** — `/me/announcements`,
+   `/unread-count`, detalle, `POST …/read` (idempotente) y enlace de adjunto;
+   `announcements_v1.notifier.ts` (lotes de ≤5000, tag/idempotencyKey por
+   comunicado) y `core/text/markdown_plain.ts`. 40 tests del ws en verde.
+5. ~~**app operación**~~ y 6. ~~**app residente**~~ **HECHAS** — ver doc hermano.
+7. **Verificación y despliegue** — PENDIENTE. Orden: `patch_announcements.sql`
+   (residguard_db) → `patch_announcements_platform.sql` (auth_db) +
+   **re-sync de las tripletas** → ws + app JUNTOS. Sin env nuevas.
 
 ## 7. Riesgos
 
-- Renumerar `06_roles_and_security.sql` toca referencias en `CLAUDE.md` de la BD
-  y comentarios de patches: hacerlo en un cambio aparte y primero.
+- ~~Renumerar `06_roles_and_security.sql` toca referencias en `CLAUDE.md` de la BD
+  y comentarios de patches: hacerlo en un cambio aparte y primero.~~ Hecho como
+  cambio aparte (`git mv` + 4 referencias: `CLAUDE.md` §16.2 y la nota de los
+  archivos de objetos, la equivalencia de `init.sql` y el encabezado de
+  `05_access_tables.sql`). Ningún patch lo mencionaba.
 - `announcement_reads` audita cada lectura en `audit.event_log`: volumen bajo
   hoy (5 cuentas), a vigilar si crece la adopción.
 - Permiso por tripleta: quien administra dos comunidades publica en ambas
   (limitación ya conocida, §7 del CLAUDE.md).
+
+---
+
+## 8. Cómo se verificó (2026-09-21/22)
+
+Todo LOCAL; nada aplicado a staging ni a producción.
+
+**BD** — tres bases desechables en el contenedor Docker `postgres` (imagen
+`postgres:17`): init nuevo ≡ init de master + patch (dump con privilegios y
+dueños idéntico salvo el token aleatorio `\restrict` de pg_dump 17); el patch
+repetido aborta con su guard; y la cadena modular `pre_setup → 00…07` ≡
+init.sql **sin una sola diferencia en `communication`**. Prueba funcional como
+`role_app` con RLS activo: 7 rechazos esperados y los caminos felices.
+
+**ws** — `npm test`: 40 tests (extracto de markdown, mensaje y lotes del push).
+Y una prueba de INTEGRACIÓN del SQL real contra una BD creada desde `init.sql`
+(43 aserciones entre las dos mitades): la regla de audiencia en los dos
+sentidos, la regla congelada al publicar vs. las personas evaluadas en vivo,
+publicar dos veces, marcar leído dos veces, archivar y baja lógica. El script
+vivió en el scratchpad — no quedó en el repo.
+
+**app** — `ng test`: 1167 tests en 88 archivos, incluidos los 25 del markdown
+(con los intentos de inyección) y los 6 del store del residente. Manejada en el
+navegador con mocks (`allowFakeAuth` temporal, revertido): se publicó un
+comunicado de punta a punta y se comprobó que el residente de la Torre A NO ve
+el de la Torre B, que el badge del nav baja al leer, que la vista previa escapa
+`<script>` en el navegador real y que el diálogo de publicar repite audiencia,
+alcance y extracto. Móvil 375 y tema claro incluidos.
+
+**Lo que NO se pudo probar localmente:** el push de verdad (no hay service
+worker en `ng serve`) y las descargas firmadas de adjuntos (storage-service no
+corre en desarrollo; el mock devuelve un data URL).
+
+## 9. Desviación consciente del plan
+
+La **tarjeta de «Últimos comunicados» en el Home** (§3 del doc de la app) NO se
+implementó. El Home de hoy no lee datos de ninguna feature: se arma solo con el
+nav, la sesión y los pines, y meterle un store de `features/me` sería el primer
+acoplamiento de esa clase. El aviso ya llega por dos caminos que sí existen —el
+badge del nav, visible desde cualquier pantalla, y el atajo de la cuadrícula—,
+así que se deja para decidir aparte en vez de forzarlo aquí.
