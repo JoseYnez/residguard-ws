@@ -236,13 +236,25 @@ export async function announcementsV1Routes(instance: FastifyInstance): Promise<
             ],
         },
         async (req, reply) => {
-            const deleted = await announcementsController.softDeleteGroup(
+            const outcome = await announcementsController.softDeleteGroup(
                 req,
                 req.params.communityId,
                 req.params.id,
             );
-            if (!deleted) {
+            if (outcome === "not_found") {
                 return reply.code(404).send({ error: "not_found", message: null });
+            }
+            if (outcome !== "deleted") {
+                const n = outcome.draftsUsing;
+                return reply.code(409).send({
+                    error: "conflict",
+                    message:
+                        (n === 1
+                            ? "Un borrador usa este grupo"
+                            : `${n} borradores usan este grupo`) +
+                        ": cámbiales la audiencia o elimínalos antes de borrarlo. " +
+                        "Sin grupo irían a «Todos». Si solo quieres dejar de ofrecerlo, desactívalo.",
+                });
             }
             return reply.code(204).send();
         },

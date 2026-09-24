@@ -33,12 +33,23 @@ const PG_MESSAGES = {
 } as const;
 
 /** Adjuntos: se validan uno por uno contra storage-service ANTES de guardar
- *  nada, y se espeja su metadata. Un id inventado no llega a la BD. */
+ *  nada, y se espeja su metadata. Un id inventado no llega a la BD.
+ *
+ *  `kept` son los adjuntos que el comunicado YA tiene, por id de SU FILA: es el
+ *  id que expone el detalle, así que al re-guardar la SPA devuelve esos ids y
+ *  no los de storage. Se reusan con su metadata espejada, sin preguntar a
+ *  storage por un id que allí no existe. */
 async function resolveFiles(
     fileIds: readonly string[],
+    kept: ReadonlyMap<string, StorageFileMetadata> = new Map(),
 ): Promise<{ ok: true; files: StorageFileMetadata[] } | { ok: false; message: string }> {
     const files: StorageFileMetadata[] = [];
     for (const fileId of fileIds) {
+        const existing = kept.get(fileId);
+        if (existing !== undefined) {
+            files.push(existing);
+            continue;
+        }
         const result = await storageClient.getFile(fileId);
         if (!result.ok) {
             return {
@@ -155,10 +166,16 @@ export const announcementsController = {
         },
     ): Promise<MutationResult<AnnouncementDetail> | null> {
         const claims = requireAuth(req);
+        const kept =
+            input.fileIds === undefined
+                ? new Map<string, StorageFileMetadata>()
+                : await withTransaction(contextFor(req), (tx) =>
+                      announcementsRepository.keptFiles(tx, communityId, id),
+                  );
         const resolved =
             input.fileIds === undefined
                 ? ({ ok: true, files: [] } as const)
-                : await resolveFiles(input.fileIds);
+                : await resolveFiles(input.fileIds, kept);
         if (!resolved.ok) {
             return { ok: false, error: { kind: "invalid", message: resolved.message } };
         }
@@ -168,7 +185,13 @@ export const announcementsController = {
                 if (current === null) {
                     return null;
                 }
-                if (input.audienceGroupId !== undefined && current.publicationStatus !== "draft") {
+                // Solo un CAMBIO se rechaza: re-enviar la misma audiencia (un
+                // PATCH que manda el comunicado entero) no reescribe nada.
+                if (
+                    input.audienceGroupId !== undefined &&
+                    input.audienceGroupId !== current.audienceGroupId &&
+                    current.publicationStatus !== "draft"
+                ) {
                     return {
                         ok: false as const,
                         error: {
@@ -405,14 +428,27 @@ export const announcementsController = {
         }
     },
 
+    /**
+     * Baja lógica de un grupo. Se NIEGA mientras algún BORRADOR lo use: el
+     * borrador no tiene snapshot, así que sin grupo su audiencia pasaría en
+     * silencio a "Todos" y al publicarlo el aviso le llegaría a toda la
+     * comunidad. Los publicados no cuentan: su audiencia ya quedó congelada.
+     *
+     * `deleted` | `not_found` | `{ draftsUsing }` (409).
+     */
     async softDeleteGroup(
         req: FastifyRequest,
         communityId: string,
         id: string,
-    ): Promise<boolean> {
-        return withTransaction(contextFor(req), (tx) =>
-            announcementsRepository.softDeleteGroup(tx, communityId, id),
-        );
+    ): Promise<"deleted" | "not_found" | { draftsUsing: number }> {
+        return withTransaction(contextFor(req), async (tx) => {
+            const draftsUsing = await announcementsRepository.draftsUsingGroup(tx, communityId, id);
+            if (draftsUsing > 0) {
+                return { draftsUsing };
+            }
+            const deleted = await announcementsRepository.softDeleteGroup(tx, communityId, id);
+            return deleted ? "deleted" : "not_found";
+        });
     },
 
     /** Vista previa de una regla ANTES de guardarla o publicar: la cifra que

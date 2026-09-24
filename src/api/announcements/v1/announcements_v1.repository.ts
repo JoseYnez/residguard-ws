@@ -1,4 +1,5 @@
 import type { TxClient } from "../../../core/db/with_transaction";
+import type { StorageFileMetadata } from "../../../core/storage/storage_client";
 import { plainExcerpt } from "../../../core/text/markdown_plain";
 
 // Acceso a datos de los COMUNICADOS (schema communication) y de sus grupos de
@@ -428,6 +429,49 @@ export const announcementsRepository = {
             sizeBytes: Number(row.size_bytes),
             sortOrder: row.sort_order,
         }));
+    },
+
+    /**
+     * Los adjuntos ACTIVOS de un comunicado, indexados por el id de su fila
+     * (el que expone el detalle), con la metadata que `replaceFiles` necesita
+     * para volver a darlos de alta. Acotado a la comunidad: el id de otro
+     * comunicado no se reusa aquí.
+     */
+    async keptFiles(
+        tx: TxClient,
+        communityId: string,
+        announcementId: string,
+    ): Promise<Map<string, StorageFileMetadata>> {
+        const result = await tx.query<{
+            id: string;
+            storage_file_id: string;
+            filename: string;
+            content_type: string;
+            size_bytes: string;
+            sha256: string;
+        }>(
+            `SELECT f.id, f.storage_file_id, f.filename, f.content_type, f.size_bytes, f.sha256
+               FROM communication.announcement_files f
+               JOIN communication.announcements a
+                 ON a.customer_id = f.customer_id AND a.id = f.announcement_id
+              WHERE f.announcement_id = $2
+                AND a.community_id    = $1
+                AND a.status         <> 'deleted'
+                AND f.status          = 'active'`,
+            [communityId, announcementId],
+        );
+        return new Map(
+            result.rows.map((row) => [
+                row.id,
+                {
+                    id: row.storage_file_id,
+                    filename: row.filename,
+                    contentType: row.content_type,
+                    sizeBytes: Number(row.size_bytes),
+                    sha256: row.sha256,
+                },
+            ]),
+        );
     },
 
     /** Referencia de storage de un adjunto, ya acotado a su comunicado. Trae
@@ -927,6 +971,20 @@ export const announcementsRepository = {
         // Relectura: el alcance cambia con la regla, y el formulario lo pinta
         // al cerrar el diálogo.
         return this.getGroupById(tx, communityId, id);
+    },
+
+    /** Cuántos BORRADORES vivos apuntan al grupo (los que quedarían en "Todos"). */
+    async draftsUsingGroup(tx: TxClient, communityId: string, groupId: string): Promise<number> {
+        const result = await tx.query<{ count: number }>(
+            `SELECT count(*)::int AS count
+               FROM communication.announcements
+              WHERE community_id       = $1
+                AND audience_group_id  = $2
+                AND status            <> 'deleted'
+                AND publication_status = 'draft'`,
+            [communityId, groupId],
+        );
+        return result.rows[0]?.count ?? 0;
     },
 
     async softDeleteGroup(tx: TxClient, communityId: string, id: string): Promise<boolean> {
