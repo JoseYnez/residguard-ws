@@ -73,12 +73,24 @@ export const AUDIENCE_MATCHES_USER = `
 // y cambia si el grupo cambia (es justo lo que el operador quiere ver mientras
 // redacta). Un comunicado PUBLICADO usa su copia congelada. Esta expresión
 // resuelve cuál manda; el resto de las consultas ya solo lee `eff_*`.
+//
+// De paso trae el nombre de la comunidad y el de quien lo REDACTÓ. El autor
+// sale del espejo `core.users` con LEFT JOIN (igual que `created_by_name` de
+// pagos): una cuenta sin sincronizar deja el nombre en NULL, no la fila fuera.
 const WITH_EFFECTIVE_AUDIENCE = `
   SELECT a.*,
          CASE WHEN a.publication_status = 'draft' THEN g.name         ELSE a.audience_label        END AS eff_label,
          CASE WHEN a.publication_status = 'draft' THEN g.member_types ELSE a.audience_member_types END AS eff_member_types,
-         CASE WHEN a.publication_status = 'draft' THEN g.towers       ELSE a.audience_towers       END AS eff_towers
+         CASE WHEN a.publication_status = 'draft' THEN g.towers       ELSE a.audience_towers       END AS eff_towers,
+         c.name       AS community_name,
+         cu.full_name AS created_by_name
     FROM communication.announcements a
+    JOIN community.communities c
+      ON c.customer_id = a.customer_id
+     AND c.id          = a.community_id
+    LEFT JOIN core.users cu
+      ON cu.customer_id = a.customer_id
+     AND cu.id          = a.created_by
     LEFT JOIN communication.audience_groups g
       ON g.customer_id = a.customer_id
      AND g.id          = a.audience_group_id
@@ -134,6 +146,7 @@ export interface AnnouncementFile {
 export interface AnnouncementSummary {
     readonly id: string;
     readonly communityId: string;
+    readonly communityName: string;
     readonly title: string;
     readonly excerpt: string;
     readonly publicationStatus: string;
@@ -145,6 +158,8 @@ export interface AnnouncementSummary {
     readonly publishedAt: string | null;
     readonly editedAt: string | null;
     readonly archivedAt: string | null;
+    /** Quién lo redactó (null = su cuenta no está en el espejo core.users). */
+    readonly createdByName: string | null;
     /** Cuántas CUENTAS lo marcaron como leído. */
     readonly readCount: number;
     /** Cuántas cuentas hay en la audiencia (el denominador honesto). */
@@ -229,6 +244,8 @@ export interface UpdateAnnouncementInput {
 interface AnnouncementRow {
     id: string;
     community_id: string;
+    community_name: string;
+    created_by_name: string | null;
     title: string;
     body_head: string;
     publication_status: string;
@@ -294,7 +311,8 @@ const GROUP_REACH_LATERAL = `
 `;
 
 const SUMMARY_COLUMNS = `
-  a.id, a.community_id, a.title, left(a.body, 400) AS body_head,
+  a.id, a.community_id, a.community_name, a.created_by_name,
+  a.title, left(a.body, 400) AS body_head,
   a.publication_status::text AS publication_status, a.is_pinned,
   a.audience_group_id, a.eff_label,
   a.eff_member_types::text[] AS eff_member_types, a.eff_towers,
@@ -308,6 +326,7 @@ function mapSummary(row: AnnouncementRow): AnnouncementSummary {
     return {
         id: row.id,
         communityId: row.community_id,
+        communityName: row.community_name,
         title: row.title,
         excerpt: plainExcerpt(row.body_head, EXCERPT_LENGTH),
         publicationStatus: row.publication_status,
@@ -319,6 +338,7 @@ function mapSummary(row: AnnouncementRow): AnnouncementSummary {
         publishedAt: row.published_at?.toISOString() ?? null,
         editedAt: row.edited_at?.toISOString() ?? null,
         archivedAt: row.archived_at?.toISOString() ?? null,
+        createdByName: row.created_by_name,
         readCount: row.read_count,
         audienceAccounts: row.audience_accounts ?? 0,
         audiencePeople: row.audience_people ?? 0,

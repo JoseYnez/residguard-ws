@@ -144,6 +144,8 @@ export interface MyAnnouncement {
   readonly publishedAt: string;
   /** No nulo = se corrigió tras publicar; la tarjeta dice "editado". */
   readonly editedAt: string | null;
+  /** Quién lo redactó (null = su cuenta no está en el espejo core.users). */
+  readonly createdByName: string | null;
   readonly fileCount: number;
   readonly read: boolean;
 }
@@ -170,21 +172,26 @@ interface MyAnnouncementRow {
   is_pinned: boolean;
   published_at: Date;
   edited_at: Date | null;
+  created_by_name: string | null;
   file_count: number;
   read: boolean;
 }
 
 // La comunidad se JOINea activa: desactivarla cierra el portal de todo lo que
-// cuelga de ella, igual que en el resto del servicio.
+// cuelga de ella, igual que en el resto del servicio. El autor sale del espejo
+// core.users con LEFT JOIN: una cuenta sin sincronizar no esconde el aviso.
 const MY_ANNOUNCEMENT_FROM = `
   FROM communication.announcements a
   JOIN community.communities c
     ON c.customer_id = a.customer_id AND c.id = a.community_id AND c.status = 'active'
+  LEFT JOIN core.users cu
+    ON cu.customer_id = a.customer_id AND cu.id = a.created_by
 `;
 
 const MY_ANNOUNCEMENT_COLUMNS = `
   a.id, a.community_id, c.name AS community_name, a.title,
   left(a.body, 400) AS body_head, a.is_pinned, a.published_at, a.edited_at,
+  cu.full_name AS created_by_name,
   (SELECT count(*)::int
      FROM communication.announcement_files f
     WHERE f.customer_id     = a.customer_id
@@ -208,6 +215,7 @@ function mapMyAnnouncement(row: MyAnnouncementRow): MyAnnouncement {
     isPinned: row.is_pinned,
     publishedAt: row.published_at.toISOString(),
     editedAt: row.edited_at?.toISOString() ?? null,
+    createdByName: row.created_by_name,
     fileCount: row.file_count,
     read: row.read,
   };

@@ -111,6 +111,7 @@ export const audiencePreviewQueryV1V = new V.ObjectNotNull(
 const announcementFieldsV1V = {
     id: new V.StringNotNull(),
     communityId: new V.StringNotNull(),
+    communityName: new V.StringNotNull(),
     title: new V.StringNotNull(),
     excerpt: new V.StringNotNull(),
     publicationStatus: new V.StringNotNull(),
@@ -123,6 +124,8 @@ const announcementFieldsV1V = {
     publishedAt: new V.String(),
     editedAt: new V.String(),
     archivedAt: new V.String(),
+    /** Quién lo redactó; null si su cuenta no está en el espejo core.users. */
+    createdByName: new V.String(),
     readCount: new V.NumberNotNull(),
     audienceAccounts: new V.NumberNotNull(),
     audiencePeople: new V.NumberNotNull(),

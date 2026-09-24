@@ -129,7 +129,6 @@ export const listMyAnnouncementsQueryV1V = new V.ObjectNotNull(
 export const myAnnouncementV1V = new V.ObjectNotNull({
   id: new V.StringNotNull(),
   communityId: new V.StringNotNull(),
-  /** La app solo lo muestra si el usuario tiene unidades en más de una. */
   communityName: new V.StringNotNull(),
   title: new V.StringNotNull(),
   excerpt: new V.StringNotNull(),
@@ -137,6 +136,8 @@ export const myAnnouncementV1V = new V.ObjectNotNull({
   publishedAt: new V.StringNotNull(),
   /** No nulo = corregido tras publicar (la tarjeta dice "editado"). */
   editedAt: new V.String(),
+  /** Quién lo redactó; null si su cuenta no está en el espejo core.users. */
+  createdByName: new V.String(),
   fileCount: new V.NumberNotNull(),
   read: new V.BooleanNotNull(),
 });
@@ -158,6 +159,7 @@ export const myAnnouncementDetailV1V = new V.ObjectNotNull({
   isPinned: new V.BooleanNotNull(),
   publishedAt: new V.StringNotNull(),
   editedAt: new V.String(),
+  createdByName: new V.String(),
   fileCount: new V.NumberNotNull(),
   read: new V.BooleanNotNull(),
   /** Markdown acotado tal cual se guardó: el render vive en la SPA. */
