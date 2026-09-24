@@ -35,6 +35,9 @@ Decisiones ya tomadas por el usuario:
 scheduler que dispare el push), comentarios/respuestas, vigencia con caducidad
 automática, canal correo (smtp-service), grupos de lista manual (comité).
 
+> Los grupos de lista manual tienen ya su plan v2: `docs/comunicados-personas.md`
+> (grupos por PERSONAS, excluyentes con la regla; sin implementar).
+
 ## 2. Decisiones de diseño
 
 1. ⚠ **Un grupo es una REGLA sobre el padrón, no una lista.** Criterios v1:
