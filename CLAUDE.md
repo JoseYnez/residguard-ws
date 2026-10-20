@@ -43,7 +43,7 @@ residguard_ws/
 │   │   ├── payment-evidence/v1/     ← evidencias de pago, lado OPERACIÓN: bandeja, captura en ventanilla, verificar (= registrar el pago) y rechazar
 │   │   ├── waivers/v1/              ← condonaciones por cargo (sp_waive_charge) + historial + reversión
 │   │   ├── expense-categories/v1/   ← rubros de gasto por comunidad (CRUD)
-│   │   ├── expenses/v1/             ← gastos ejercidos (CRUD)
+│   │   ├── expenses/v1/             ← gastos ejercidos (CRUD) + comprobantes adjuntos (fileIds, enlace firmado)
 │   │   ├── fund-adjustments/v1/     ← movimientos manuales de caja (CRUD)
 │   │   ├── reports/v1/              ← agregados financieros por comunidad (solo GET): estado de caja por rango, cobranza devengada, antigüedad y adeudo por unidad
 │   │   ├── visits/v1/               ← registro previo de visitas, lado OPERACIÓN: bitácora de la comunidad, consulta de un código en caseta y check-in
@@ -174,6 +174,16 @@ responsabilidad por archivo que en `admin_ws`.
      vivo contra el padrón. Publicar es `execute` aparte (`announcements.publish`)
      porque dispara el push a toda la audiencia y no se deshace; el aviso sale
      DESPUÉS del commit y nunca se espera.
+   - **Comprobantes de gastos: la misma mecánica de adjuntos, sin permisos
+     nuevos.** `billing.expense_files` calca `payment_evidence_files`; el
+     gasto los recibe como `fileIds` en POST/PATCH (en el PATCH es el conjunto
+     COMPLETO: ids de fila de los que conserva + ids de storage de los nuevos;
+     ausente = no tocar) y los expone en `files`; el enlace firmado es
+     `GET /communities/:communityId/expenses/:id/files/:fileId/link` con
+     `expenses.read` + `requireCommunityAccess()`. Adjuntar viaja con
+     `expenses.create/update` — quien captura necesita además
+     `storage.files.write` (la SPA sube directo). Son OPCIONALES y la baja
+     lógica del gasto no toca sus archivos. Ver `docs/evidencias-gastos.md`.
 6. Recurso fuera del alcance → **404**, indistinguible de inexistente.
    El **primer** miembro de una comunidad lo crea `POST /communities` en la
    misma transacción (el actor queda como miembro de lo que acaba de crear);

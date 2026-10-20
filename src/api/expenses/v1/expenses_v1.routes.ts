@@ -7,11 +7,12 @@ import {
   communityIdParamV1V,
   communityScopedIdParamV1V,
 } from "../../common/common_v1.verifier";
-import { expensesController } from "./expenses_v1.controller";
-import type { UpdateExpenseInput } from "./expenses_v1.repository";
+import { expensesController, type UpdateExpenseCommand } from "./expenses_v1.controller";
 import {
   createExpenseV1V,
   errorResponseV1V,
+  expenseFileLinkV1V,
+  expenseFileParamV1V,
   expenseListV1V,
   expenseV1V,
   listExpensesQueryV1V,
@@ -20,10 +21,12 @@ import {
 
 // Recurso expenses/v1: gastos (egresos) ejercidos por una comunidad. CRUD
 // anidado bajo /communities/:communityId. Baja lógica; el saldo de la caja
-// se deriva (GET /communities/:communityId/balance).
+// se deriva (GET /communities/:communityId/balance). Los comprobantes viajan
+// como `fileIds` en el POST/PATCH y se descargan por enlace firmado.
 
-/** Cuerpo del PATCH → UpdateExpenseInput (null en NOT NULL = "no tocar";
- *  null en anulables = "limpiar"). */
+/** Cuerpo del PATCH → UpdateExpenseCommand (null en NOT NULL = "no tocar";
+ *  null en anulables = "limpiar"; `fileIds` ausente o null = no tocar los
+ *  adjuntos, array = conjunto completo). */
 function toUpdateInput(body: {
   expenseCategoryId?: string | null;
   concept?: string | null;
@@ -34,7 +37,8 @@ function toUpdateInput(body: {
   reference?: string | null;
   authorizedBy?: string | null;
   cashAccountId?: string | null;
-}): UpdateExpenseInput {
+  fileIds?: readonly string[] | null;
+}): UpdateExpenseCommand {
   return {
     ...(body.expenseCategoryId !== null &&
       body.expenseCategoryId !== undefined && { expenseCategoryId: body.expenseCategoryId }),
@@ -48,6 +52,7 @@ function toUpdateInput(body: {
     ...(body.reference !== undefined && { reference: body.reference }),
     ...(body.authorizedBy !== undefined && { authorizedBy: body.authorizedBy }),
     ...(body.cashAccountId !== undefined && { cashAccountId: body.cashAccountId }),
+    ...(body.fileIds !== null && body.fileIds !== undefined && { fileIds: body.fileIds }),
   };
 }
 
@@ -128,11 +133,44 @@ export async function expensesV1Routes(instance: FastifyInstance): Promise<void>
         reference: b.reference ?? null,
         authorizedBy: b.authorizedBy ?? null,
         cashAccountId: b.cashAccountId ?? null,
+        fileIds: b.fileIds ?? [],
       });
       if (!result.ok) {
         return reply.code(400).send({ error: result.error.kind, message: result.error.message });
       }
       return reply.code(201).send(result.value);
+    },
+  );
+
+  // Enlace firmado de descarga de un comprobante. La SPA lo pide al momento de
+  // mostrarlo (vigencia corta, no se almacena). Ver = `expenses.read`: no hay
+  // un código aparte para los adjuntos, igual que en las fotos de caseta.
+  app.get(
+    "/communities/:communityId/expenses/:id/files/:fileId/link",
+    {
+      schema: {
+        params: expenseFileParamV1V,
+        response: { 200: expenseFileLinkV1V, 404: errorResponseV1V, 503: errorResponseV1V },
+      },
+      preHandler: [requirePermission(PERMISSIONS.expensesRead), requireCommunityAccess()],
+    },
+    async (req, reply) => {
+      const link = await expensesController.fileLink(
+        req,
+        req.params.communityId,
+        req.params.id,
+        req.params.fileId,
+      );
+      if (link === "not_found") {
+        return reply.code(404).send({ error: "not_found", message: null });
+      }
+      if (link === "unavailable") {
+        return reply.code(503).send({
+          error: "storage_unavailable",
+          message: "El almacén de archivos no respondió. Intenta de nuevo.",
+        });
+      }
+      return reply.code(200).send(link);
     },
   );
 

@@ -1,14 +1,28 @@
 import type { TxClient } from "../../../core/db/with_transaction";
+import type { StorageFileMetadata } from "../../../core/storage/storage_client";
 
-// Acceso a datos del recurso expenses (billing.expenses). Acotado a una
-// comunidad ya autorizada; RLS filtra el tenant. La FK compuesta de BD
-// garantiza que el rubro sea del MISMO tenant y la MISMA comunidad (23503 si
-// no). Sin DELETE físico: baja = status='deleted'.
+// Acceso a datos del recurso expenses (billing.expenses + billing.expense_files).
+// Acotado a una comunidad ya autorizada; RLS filtra el tenant. La FK compuesta
+// de BD garantiza que el rubro sea del MISMO tenant y la MISMA comunidad
+// (23503 si no). Sin DELETE físico: baja = status='deleted'.
+//
+// Los COMPROBANTES (expense_files) son filas de referencia: los bytes viven en
+// storage-service y aquí queda el id de storage + un espejo de metadata. El
+// id que sale al cliente es el de la FILA, no el de storage: por ese id pide
+// el enlace firmado y por ese id dice qué conserva al editar.
 
 /** Caja resuelta (id + nombre) para que el cliente no cruce catálogos. */
 export interface ExpenseCashAccountRef {
   readonly id: string;
   readonly name: string;
+}
+
+/** Un comprobante como lo ve el cliente (sin id de storage ni huella). */
+export interface ExpenseFile {
+  readonly id: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
 }
 
 export interface Expense {
@@ -24,6 +38,8 @@ export interface Expense {
   readonly reference: string | null;
   readonly authorizedBy: string | null;
   readonly cashAccount: ExpenseCashAccountRef | null;
+  // Mutable a propósito: la respuesta tipada del verifier no admite readonly.
+  readonly files: ExpenseFile[];
   readonly status: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -39,6 +55,8 @@ export interface CreateExpenseInput {
   readonly reference?: string | null;
   readonly authorizedBy?: string | null;
   readonly cashAccountId?: string | null;
+  /** Comprobantes YA validados contra storage (metadata espejada). */
+  readonly files?: readonly StorageFileMetadata[];
 }
 
 export interface UpdateExpenseInput {
@@ -51,6 +69,9 @@ export interface UpdateExpenseInput {
   readonly reference?: string | null;
   readonly authorizedBy?: string | null;
   readonly cashAccountId?: string | null;
+  /** Conjunto COMPLETO de comprobantes que el gasto debe quedar llevando
+   *  (ya validados). `undefined` = no tocar los adjuntos. */
+  readonly files?: readonly StorageFileMetadata[];
 }
 
 export interface ListExpensesInput {
@@ -98,7 +119,15 @@ interface ExpenseRow {
   updated_at: Date;
 }
 
-function mapRow(row: ExpenseRow): Expense {
+interface ExpenseFileRow {
+  id: string;
+  expense_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: string;
+}
+
+function mapRow(row: ExpenseRow, files: ExpenseFile[]): Expense {
   return {
     id: row.id,
     communityId: row.community_id,
@@ -115,10 +144,68 @@ function mapRow(row: ExpenseRow): Expense {
       row.cash_account_id !== null && row.cash_account_name !== null
         ? { id: row.cash_account_id, name: row.cash_account_name }
         : null,
+    files,
     status: row.status,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
+}
+
+/**
+ * Comprobantes ACTIVOS de un conjunto de gastos, agrupados por gasto y en
+ * orden de subida. Una segunda consulta y no un JOIN: un JOIN multiplicaría
+ * las filas del listado por archivo y rompería la paginación.
+ */
+async function filesByExpense(
+  tx: TxClient,
+  expenseIds: readonly string[],
+): Promise<Map<string, ExpenseFile[]>> {
+  const grouped = new Map<string, ExpenseFile[]>();
+  if (expenseIds.length === 0) {
+    return grouped;
+  }
+  const result = await tx.query<ExpenseFileRow>(
+    `SELECT id, expense_id, filename, content_type, size_bytes
+       FROM billing.expense_files
+      WHERE expense_id = ANY($1::uuid[]) AND status = 'active'
+      ORDER BY created_at, id`,
+    [expenseIds],
+  );
+  for (const row of result.rows) {
+    const list = grouped.get(row.expense_id) ?? [];
+    list.push({
+      id: row.id,
+      filename: row.filename,
+      contentType: row.content_type,
+      sizeBytes: Number(row.size_bytes),
+    });
+    grouped.set(row.expense_id, list);
+  }
+  return grouped;
+}
+
+async function insertFiles(
+  tx: TxClient,
+  customerId: string,
+  expenseId: string,
+  files: readonly StorageFileMetadata[],
+): Promise<void> {
+  for (const file of files) {
+    await tx.query(
+      `INSERT INTO billing.expense_files
+         (customer_id, expense_id, storage_file_id, filename, content_type, size_bytes, sha256)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        customerId,
+        expenseId,
+        file.id,
+        file.filename,
+        file.contentType,
+        file.sizeBytes,
+        file.sha256,
+      ],
+    );
+  }
 }
 
 export const expensesRepository = {
@@ -159,7 +246,14 @@ export const expensesRepository = {
       [input.communityId, categoryId, method, cashAccountId, from, to, search, input.pageSize, offset],
     );
 
-    return { items: itemsResult.rows.map(mapRow), total };
+    const files = await filesByExpense(
+      tx,
+      itemsResult.rows.map((row) => row.id),
+    );
+    return {
+      items: itemsResult.rows.map((row) => mapRow(row, files.get(row.id) ?? [])),
+      total,
+    };
   },
 
   async getById(tx: TxClient, communityId: string, id: string): Promise<Expense | null> {
@@ -169,7 +263,11 @@ export const expensesRepository = {
       [id, communityId],
     );
     const row = result.rows[0];
-    return row === undefined ? null : mapRow(row);
+    if (row === undefined) {
+      return null;
+    }
+    const files = await filesByExpense(tx, [row.id]);
+    return mapRow(row, files.get(row.id) ?? []);
   },
 
   /**
@@ -210,7 +308,76 @@ export const expensesRepository = {
     return (result.rowCount ?? 0) > 0;
   },
 
-  /** Inserta un gasto. Puede lanzar 23503 (rubro/caja de otra comunidad) / 23514. */
+  /**
+   * Los comprobantes ACTIVOS de un gasto, indexados por el id de su FILA (el
+   * que expone el detalle), con la metadata que hace falta para volver a
+   * darlos de alta sin preguntarle a storage. Acotado a la comunidad: el id de
+   * un gasto ajeno no se reusa aquí. Mapa vacío si el gasto no existe.
+   */
+  async keptFiles(
+    tx: TxClient,
+    communityId: string,
+    expenseId: string,
+  ): Promise<Map<string, StorageFileMetadata>> {
+    const result = await tx.query<{
+      id: string;
+      storage_file_id: string;
+      filename: string;
+      content_type: string;
+      size_bytes: string;
+      sha256: string;
+    }>(
+      `SELECT f.id, f.storage_file_id, f.filename, f.content_type, f.size_bytes, f.sha256
+         FROM billing.expense_files f
+         JOIN billing.expenses e
+           ON e.customer_id = f.customer_id AND e.id = f.expense_id
+        WHERE f.expense_id   = $2
+          AND e.community_id = $1
+          AND e.status      <> 'deleted'
+          AND f.status       = 'active'`,
+      [communityId, expenseId],
+    );
+    return new Map(
+      result.rows.map((row) => [
+        row.id,
+        {
+          id: row.storage_file_id,
+          filename: row.filename,
+          contentType: row.content_type,
+          sizeBytes: Number(row.size_bytes),
+          sha256: row.sha256,
+        },
+      ]),
+    );
+  },
+
+  /** Referencia de storage de un comprobante, ya acotado a su gasto y a la
+   *  comunidad de la ruta. null = no existe, no es de ese gasto, o el gasto
+   *  está fuera de la comunidad — indistinguibles a propósito (404). */
+  async fileRef(
+    tx: TxClient,
+    communityId: string,
+    expenseId: string,
+    fileId: string,
+  ): Promise<{ storageFileId: string } | null> {
+    const result = await tx.query<{ storage_file_id: string }>(
+      `SELECT f.storage_file_id
+         FROM billing.expense_files f
+         JOIN billing.expenses e
+           ON e.customer_id = f.customer_id AND e.id = f.expense_id
+        WHERE f.id           = $3
+          AND f.expense_id   = $2
+          AND e.community_id = $1
+          AND e.status      <> 'deleted'
+          AND f.status       = 'active'`,
+      [communityId, expenseId, fileId],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : { storageFileId: row.storage_file_id };
+  },
+
+  /** Inserta un gasto (y sus comprobantes, en la misma transacción). Puede
+   *  lanzar 23503 (rubro/caja de otra comunidad) / 23514. */
   async create(
     tx: TxClient,
     customerId: string,
@@ -237,13 +404,16 @@ export const expensesRepository = {
         input.cashAccountId ?? null,
       ],
     );
-    const created = await this.getById(tx, communityId, inserted.rows[0]!.id);
+    const expenseId = inserted.rows[0]!.id;
+    await insertFiles(tx, customerId, expenseId, input.files ?? []);
+    const created = await this.getById(tx, communityId, expenseId);
     return created!;
   },
 
   /** Actualización parcial. Devuelve null si no existe (o está 'deleted'). */
   async update(
     tx: TxClient,
+    customerId: string,
     communityId: string,
     id: string,
     input: UpdateExpenseInput,
@@ -268,21 +438,68 @@ export const expensesRepository = {
     if (input.authorizedBy !== undefined) push("authorized_by", input.authorizedBy, "::uuid");
     if (input.cashAccountId !== undefined) push("cash_account_id", input.cashAccountId, "::uuid");
 
-    if (sets.length === 0) {
-      return this.getById(tx, communityId, id);
-    }
-
-    params.push(id, communityId);
-    const result = await tx.query<{ id: string }>(
-      `UPDATE billing.expenses SET ${sets.join(", ")}
-        WHERE id = $${i} AND community_id = $${i + 1} AND status != 'deleted'
-        RETURNING id`,
-      params,
+    // El gasto se bloquea aunque el PATCH solo traiga adjuntos: dos ediciones
+    // simultáneas del mismo conjunto de comprobantes se serializan aquí.
+    const locked = await tx.query<{ id: string }>(
+      `SELECT id FROM billing.expenses
+        WHERE id = $1 AND community_id = $2 AND status != 'deleted'
+        FOR UPDATE`,
+      [id, communityId],
     );
-    if (result.rows[0] === undefined) {
+    if (locked.rows[0] === undefined) {
       return null;
     }
+
+    if (sets.length > 0) {
+      params.push(id, communityId);
+      await tx.query(
+        `UPDATE billing.expenses SET ${sets.join(", ")}
+          WHERE id = $${i} AND community_id = $${i + 1} AND status != 'deleted'`,
+        params,
+      );
+    }
+
+    if (input.files !== undefined) {
+      await this.replaceFiles(tx, customerId, id, input.files);
+    }
+
     return this.getById(tx, communityId, id);
+  },
+
+  /**
+   * Deja al gasto con EXACTAMENTE estos comprobantes: baja lógica de los que
+   * ya no vienen y alta de los que aún no tiene. Los que se conservan no se
+   * tocan — conservan su id de fila y su lugar en el orden de subida (a
+   * diferencia de comunicados, que los re-inserta todos).
+   */
+  async replaceFiles(
+    tx: TxClient,
+    customerId: string,
+    expenseId: string,
+    files: readonly StorageFileMetadata[],
+  ): Promise<void> {
+    const wanted = files.map((file) => file.id);
+    await tx.query(
+      `UPDATE billing.expense_files SET status = 'deleted'
+        WHERE expense_id = $1
+          AND status <> 'deleted'
+          AND NOT (storage_file_id = ANY($2::uuid[]))`,
+      [expenseId, wanted],
+    );
+    const present = await tx.query<{ storage_file_id: string }>(
+      `SELECT storage_file_id FROM billing.expense_files
+        WHERE expense_id = $1 AND status <> 'deleted'`,
+      [expenseId],
+    );
+    const already = new Set(present.rows.map((row) => row.storage_file_id));
+    const seen = new Set<string>();
+    const fresh = files.filter((file) => {
+      // El mismo archivo dos veces en la lista es un solo adjunto.
+      if (already.has(file.id) || seen.has(file.id)) return false;
+      seen.add(file.id);
+      return true;
+    });
+    await insertFiles(tx, customerId, expenseId, fresh);
   },
 
   async softDelete(tx: TxClient, communityId: string, id: string): Promise<boolean> {
